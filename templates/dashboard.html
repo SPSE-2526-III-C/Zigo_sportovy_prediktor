@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+
+{% block head %}
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+    body {
+        background-color: #060e20;
+        color: #dee5ff;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="min-h-screen px-6 py-10 max-w-5xl mx-auto">
+
+    <!-- HEADER -->
+    <div class="mb-8 flex items-center justify-between">
+        <div>
+            <h1 class="text-3xl font-bold">Moje Strava tréningy</h1>
+            <p class="text-sm opacity-60">
+                Počet tréningov: {{ trainings|length }}
+            </p>
+        </div>
+
+        {% if logged_in %}
+        <a href="{{ url_for('logout') }}"
+            class="bg-[#fc4c02] hover:bg-orange-600 text-white px-5 py-2 rounded-xl font-semibold transition">
+            Odhlásiť sa
+        </a>
+        {% endif %}
+    </div>
+
+    <!-- TABLE -->
+    <div class="bg-[#111827] rounded-3xl overflow-hidden shadow-lg">
+
+        <table class="w-full text-sm">
+            <thead>
+                <tr class="bg-[#fc4c02] text-white">
+                    <th class="p-3 text-left">Dátum</th>
+                    <th class="p-3 text-left">Názov</th>
+                    <th class="p-3 text-left">Vzdialenosť</th>
+                    <th class="p-3 text-left">Čas</th>
+                    <th class="p-3 text-left">Tempo</th>
+                    <th class="p-3 text-left">HR</th>
+                </tr>
+            </thead>
+
+            <tbody>
+                {% for t in trainings %}
+                <tr class="border-b border-white/10 hover:bg-white/5">
+                    <td class="p-3">{{ t.date }}</td>
+                    <td class="p-3 font-semibold">{{ t.name }}</td>
+                    <td class="p-3">{{ t.distance }} km</td>
+                    <td class="p-3">{{ t.moving_time }}</td>
+                    <td class="p-3 text-orange-400 font-bold">{{ t.pace }}</td>
+                    <td class="p-3">
+                        {% if t.hr %}
+                        {{ t.hr }} bpm
+                        {% else %}
+                        -
+                        {% endif %}
+                    </td>
+                </tr>
+                {% else %}
+                <tr>
+                    <td colspan="6" class="p-6 text-center opacity-60">
+                        Žiadne tréningy.
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+
+    </div>
+
+</div>
+{% endblock %}

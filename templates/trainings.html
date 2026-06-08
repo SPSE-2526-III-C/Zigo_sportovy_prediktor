@@ -1,0 +1,181 @@
+{% extends "base.html" %}
+
+{% block content %}
+<main class="mt-6 pb-12">
+    <!-- Page Header -->
+    <div class="mb-8">
+        <p class="text-on-surface-variant font-headline font-semibold text-sm uppercase tracking-widest mb-1">Denník aktivít</p>
+        <h2 class="text-4xl font-headline font-extrabold tracking-tight text-on-surface">SPRÁVA TRÉNINGOV</h2>
+    </div>
+
+    <div class="grid grid-cols-1 md:grid-cols-12 gap-6">
+        <!-- Form Card -->
+        <div class="md:col-span-5 bg-surface-container-low rounded-3xl p-6 lg:p-8">
+            <div class="flex items-center gap-3 mb-6">
+                <div class="w-10 h-10 rounded-2xl bg-primary-container flex items-center justify-center">
+                    <span class="material-symbols-outlined text-primary text-xl">directions_run</span>
+                </div>
+                <div>
+                    <h3 class="font-headline font-bold text-on-surface">Pridať nový tréning</h3>
+                    <p class="text-xs text-on-surface-variant">Rovnaké názvy sa spoja do skupiny</p>
+                </div>
+            </div>
+
+            <form method="POST" class="space-y-5">
+                <div>
+                    <label for="training_type">Názov / Typ tréningu</label>
+                    <input type="text" id="training_type" name="training_type" placeholder='napr. "3x300m", "10km tempo"' required>
+                </div>
+
+                <div class="grid grid-cols-2 gap-3">
+                    <div>
+                        <label for="distance_km">Vzdialenosť (km)</label>
+                        <input type="number" step="0.01" id="distance_km" name="distance_km" placeholder="napr. 5.5">
+                    </div>
+                    <div>
+                        <label>Výsledný čas</label>
+                        <div class="flex items-center gap-1">
+                            <input type="number" id="dur_min" name="dur_min" placeholder="Min" min="0" style="text-align:center; padding-left:0 !important; padding-right:0 !important;">
+                            <span class="text-on-surface-variant font-black text-lg flex-shrink-0">:</span>
+                            <input type="number" id="dur_sec" name="dur_sec" placeholder="Sek" min="0" max="59" style="text-align:center; padding-left:0 !important; padding-right:0 !important;">
+                            <span class="text-on-surface-variant font-black text-lg flex-shrink-0">.</span>
+                            <input type="number" id="dur_hun" name="dur_hun" placeholder="St" min="0" max="99" style="text-align:center; padding-left:0 !important; padding-right:0 !important;">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Interval toggle -->
+                <div class="bg-surface-container-highest rounded-2xl p-4">
+                    <label class="flex items-center gap-3 cursor-pointer mb-0 normal-case text-on-surface text-sm font-bold tracking-normal">
+                        <div class="relative">
+                            <input type="checkbox" id="is_interval" onchange="toggleIntervals()" class="sr-only peer">
+                            <div class="w-10 h-5 bg-surface-container rounded-full peer peer-checked:bg-primary transition-colors"></div>
+                            <div class="absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full transition-transform peer-checked:translate-x-5 shadow"></div>
+                        </div>
+                        Intervalový tréning — pridať časy úsekov
+                    </label>
+
+                    <div id="intervals_section" class="hidden mt-4 space-y-3">
+                        <div>
+                            <label>Počet úsekov</label>
+                            <input type="number" id="interval_count" class="w-28" min="1" max="30" oninput="generateIntervalInputs()" placeholder="napr. 5">
+                        </div>
+                        <div id="interval_inputs" class="grid grid-cols-2 gap-2"></div>
+                    </div>
+                </div>
+
+                <div>
+                    <label for="notes">Poznámky</label>
+                    <textarea id="notes" name="notes" rows="3" placeholder="Pocity, tréningový plán, podmienky..."></textarea>
+                </div>
+
+                <button type="submit" class="w-full bg-primary hover:opacity-90 transition-opacity text-white font-headline font-bold py-3 px-6 rounded-2xl text-sm uppercase tracking-wider flex items-center justify-center gap-2">
+                    <span class="material-symbols-outlined text-base">add</span>
+                    Pridať do denníka
+                </button>
+            </form>
+        </div>
+
+        <!-- History Panel -->
+        <div class="md:col-span-7 bg-surface-container-high rounded-3xl p-6 lg:p-8" style="max-height: 85vh; overflow-y: auto;">
+            <div class="flex items-center justify-between mb-6">
+                <div class="flex items-center gap-3">
+                    <div class="w-10 h-10 rounded-2xl bg-secondary-container flex items-center justify-center">
+                        <span class="material-symbols-outlined text-secondary text-xl">format_list_bulleted</span>
+                    </div>
+                    <div>
+                        <h3 class="font-headline font-bold text-on-surface">História & Skupiny</h3>
+                        <p class="text-xs text-on-surface-variant">Automaticky zoskupené podľa typu</p>
+                    </div>
+                </div>
+                <a href="{{ url_for('strava_authorized') }}" class="flex items-center gap-2 bg-[#fc4c02] hover:opacity-90 transition-opacity text-white font-bold px-4 py-2 rounded-xl text-xs uppercase tracking-wider">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M15.387 17.944l-2.089-4.116h-3.065L15.387 24l5.15-10.172h-3.065l-2.085 4.116zm-5.283-10.42L12.189 11.64h3.065L10.104 0 4.954 10.2h3.065l2.085-4.116z"/></svg>
+                    Sync Strava
+                </a>
+            </div>
+
+            {% for t_type, trainings in grouped_trainings.items() %}
+            <div class="mb-8">
+                <div class="flex items-center gap-2 mb-3">
+                    <span class="material-symbols-outlined text-primary text-base">sprint</span>
+                    <h4 class="font-headline font-bold text-primary text-sm uppercase tracking-wider">{{ t_type }}</h4>
+                    <div class="flex-1 h-px bg-white/5"></div>
+                    <span class="text-[10px] text-on-surface-variant font-bold bg-surface-container px-2 py-0.5 rounded-full">{{ trainings|length }}x</span>
+                </div>
+
+                <div class="space-y-2">
+                    {% for t in trainings %}
+                    <div class="bg-surface-container-low hover:bg-surface-bright transition-colors rounded-2xl p-4 border-l-2 border-primary/40">
+                        <div class="flex items-center justify-between mb-2">
+                            <span class="text-xs text-on-surface-variant font-bold">{{ t.date.strftime('%d. %m. %Y') }}</span>
+                            <div class="flex items-center gap-3 text-right">
+                                {% if t.distance_km %}
+                                <div>
+                                    <span class="text-[10px] text-on-surface-variant font-bold uppercase block">Dist</span>
+                                    <span class="font-headline font-bold text-on-surface text-sm">{{ t.distance_km }} <span class="text-xs text-on-surface-variant font-normal">km</span></span>
+                                </div>
+                                {% endif %}
+                                {% if t.duration_min or t.duration_sec is not none %}
+                                <div>
+                                    <span class="text-[10px] text-on-surface-variant font-bold uppercase block">Čas</span>
+                                    <span class="font-headline font-bold text-primary text-sm">
+                                        {% if t.duration_min %}{{ t.duration_min|int }}:{% if t.duration_sec is not none %}{{ '{:05.2f}'.format(t.duration_sec) }}{% else %}00.00{% endif %}
+                                        {% elif t.duration_sec is not none %}{{ '{:0.2f}'.format(t.duration_sec) }} s{% endif %}
+                                    </span>
+                                </div>
+                                {% endif %}
+                            </div>
+                        </div>
+
+                        {% if t.intervals_data %}
+                        <div class="flex flex-wrap gap-1.5 mt-2">
+                            {% for time in t.intervals_data.split(',') %}
+                            <span class="bg-primary/10 border border-white/5 px-2.5 py-1 rounded-lg text-xs font-bold">
+                                <span class="text-on-surface-variant mr-1">{{ loop.index }}.</span>
+                                <span class="text-primary">{{ time }}</span> <span class="text-on-surface-variant font-normal">s</span>
+                            </span>
+                            {% endfor %}
+                        </div>
+                        {% endif %}
+
+                        {% if t.notes %}
+                        <p class="text-xs text-on-surface-variant mt-2 leading-relaxed">{{ t.notes }}</p>
+                        {% endif %}
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+            {% else %}
+            <div class="flex flex-col items-center justify-center py-20 text-center">
+                <span class="material-symbols-outlined text-on-surface-variant text-6xl mb-4 opacity-20">directions_run</span>
+                <p class="text-on-surface-variant font-bold">Zatiaľ žiadne tréningy</p>
+                <p class="text-xs text-on-surface-variant opacity-50 mt-1">Pridaj prvý tréning pomocou formulára</p>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</main>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function toggleIntervals() {
+    const isChecked = document.getElementById("is_interval").checked;
+    const section = document.getElementById("intervals_section");
+    section.classList.toggle("hidden", !isChecked);
+    if (!isChecked) document.getElementById("interval_inputs").innerHTML = "";
+}
+function generateIntervalInputs() {
+    const count = parseInt(document.getElementById("interval_count").value) || 0;
+    const container = document.getElementById("interval_inputs");
+    container.innerHTML = "";
+    for (let i = 1; i <= count; i++) {
+        container.innerHTML += `
+        <div class="bg-surface-container rounded-xl p-3">
+            <label style="color: #ff7852; font-size:0.7rem; margin-bottom:4px; display:block;">Úsek ${i}</label>
+            <input type="number" step="0.01" name="interval_times[]" placeholder="napr. 39.50" required>
+        </div>`;
+    }
+}
+</script>
+{% endblock %}

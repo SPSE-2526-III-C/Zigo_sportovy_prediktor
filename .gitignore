@@ -1,0 +1,15 @@
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+
+# Secrets - NIKDY nenahrávaj na GitHub!
+.env
+
+# Databáza a cache
+instance/
+cache/
+
+# Claude Code nastavenia
+.claude/

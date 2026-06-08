@@ -1,0 +1,1197 @@
+import os
+import time
+import threading
+import webbrowser
+import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, date, timedelta
+
+from flask import Flask, render_template, request, jsonify, redirect, url_for, session, flash
+from flask_sqlalchemy import SQLAlchemy
+from stravalib.client import Client
+from dotenv import load_dotenv
+
+load_dotenv()
+
+app = Flask(__name__)
+app.config['SECRET_KEY'] = 'dev-key-for-sprint-predictor-123'
+app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///database.db'
+app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+# Session sa vymaže keď zatvoríš prehliadač (nie permanent cookie)
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+
+db = SQLAlchemy(app)
+
+
+@app.before_request
+def make_session_non_permanent():
+    session.permanent = False
+
+
+# -----------------------------
+# Database Models
+# -----------------------------
+class BiometricLog(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    date = db.Column(db.Date, nullable=False, default=datetime.utcnow)
+    hrv = db.Column(db.Float, nullable=False)
+    recovery = db.Column(db.Integer, nullable=False)
+    rhr = db.Column(db.Integer, nullable=True)
+
+
+class TrainingLog(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    date = db.Column(db.Date, nullable=False, default=datetime.utcnow)
+    training_type = db.Column(db.String(100), nullable=False)
+    distance_km = db.Column(db.Float, nullable=True)
+    duration_min = db.Column(db.Float, nullable=True)
+    duration_sec = db.Column(db.Float, nullable=True)
+    intervals_data = db.Column(db.Text, nullable=True)
+    notes = db.Column(db.Text, nullable=True)
+
+
+class StravaToken(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    athlete_id = db.Column(db.String(64), nullable=True, index=True)
+    access_token = db.Column(db.Text, nullable=False)
+    refresh_token = db.Column(db.Text, nullable=True)
+    expires_at = db.Column(db.Integer, nullable=True)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+
+
+# -----------------------------
+# Init
+# -----------------------------
+with app.app_context():
+    db.create_all()
+
+
+# -----------------------------
+# Strava Config
+# -----------------------------
+STRAVA_CLIENT_ID = os.getenv('STRAVA_CLIENT_ID')
+STRAVA_CLIENT_SECRET = os.getenv('STRAVA_CLIENT_SECRET')
+STRAVA_REDIRECT_URI = (
+    os.getenv('STRAVA_REDIRECT_URI')
+    or os.getenv('STRAVA_CALLBACK_URL')
+    or 'http://localhost:5000/strava/callback'
+)
+
+
+# -----------------------------
+# Helpers
+# -----------------------------
+def get_valid_access_token(athlete_id=None):
+    if athlete_id is None:
+        tok = session.get('strava_access_token')
+        if tok:
+            return tok
+        raise ValueError("athlete_id required to refresh token")
+
+    token_row = StravaToken.query.filter_by(athlete_id=str(athlete_id)).first()
+    if not token_row:
+        raise ValueError("no token found for athlete")
+
+    now = int(time.time())
+    if token_row.expires_at and token_row.expires_at - 30 > now:
+        return token_row.access_token
+
+    if not token_row.refresh_token:
+        raise ValueError("no refresh token available")
+
+    resp = requests.post(
+        'https://www.strava.com/oauth/token',
+        data={
+            'client_id': STRAVA_CLIENT_ID,
+            'client_secret': STRAVA_CLIENT_SECRET,
+            'grant_type': 'refresh_token',
+            'refresh_token': token_row.refresh_token
+        },
+        timeout=10
+    )
+
+    if resp.status_code != 200:
+        try:
+            body = resp.json()
+        except Exception:
+            body = resp.text
+        raise RuntimeError(f"refresh failed: {resp.status_code} {body}")
+
+    new = resp.json()
+    token_row.access_token = new.get('access_token')
+    token_row.refresh_token = new.get('refresh_token') or token_row.refresh_token
+    token_row.expires_at = new.get('expires_at')
+    db.session.commit()
+
+    session['strava_access_token'] = token_row.access_token
+    session['strava_refresh_token'] = token_row.refresh_token
+    session['strava_expires_at'] = token_row.expires_at
+
+    return token_row.access_token
+
+
+def pace_from_speed(speed):
+    if not speed:
+        return "-"
+    pace_sec = 1000 / float(speed)
+    return f"{int(pace_sec // 60)}:{int(pace_sec % 60):02d} /km"
+
+
+# -----------------------------
+# PR Helpers (Osobáky)
+# -----------------------------
+def _seconds_to_time(s):
+    """Converts seconds to H:MM:SS or MM:SS string."""
+    s = int(s)
+    h, rem = divmod(s, 3600)
+    m, sec = divmod(rem, 60)
+    if h:
+        return f"{h}:{m:02d}:{sec:02d}"
+    return f"{m}:{sec:02d}"
+
+
+def _pace_str(seconds, km):
+    """Returns pace string MM:SS /km."""
+    if not seconds or not km:
+        return "—"
+    m, s = divmod(int(seconds / km), 60)
+    return f"{m}:{s:02d}"
+
+
+def get_strava_prs(access_token):
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    # Distance-based ranges for longer races (total activity distance)
+    dist_ranges = {
+        '5k':       (4.8,  5.2),
+        '10k':      (9.7,  10.3),
+        'half':     (20.5, 21.5),
+        'marathon': (41.5, 42.8),
+    }
+
+    # Short races detectable from summary total distance
+    short_dist_ranges = {
+        '400m': (0.35, 0.45),
+        '800m': (0.75, 0.90),
+    }
+
+    # Strava best_effort name → our output key
+    # NOTE: Strava names 800m as "1/2 mile", half as "Half-Marathon"
+    best_effort_keys = {
+        '400m':          '400m',
+        '1/2 mile':      '800m',
+        '5k':            '5k',
+        '10k':           '10k',
+        'Half-Marathon': 'half',
+        'Marathon':      'marathon',
+    }
+
+    best = {k: None for k in ['400m', '800m', '5k', '10k', 'half', 'marathon']}
+
+    # 10-minute filesystem cache
+    try:
+        from pathlib import Path
+        import json as _json
+        cache_dir = Path('cache')
+        cache_dir.mkdir(exist_ok=True)
+        athlete_hint = (access_token or '')[-8:]
+        cache_file = cache_dir / f'prs_{athlete_hint}.json'
+        if cache_file.exists() and time.time() - cache_file.stat().st_mtime < 1800:
+            try:
+                with cache_file.open('r', encoding='utf-8') as cf:
+                    cached = _json.load(cf)
+                for k in best:
+                    best[k] = cached.get(k)
+                return best
+            except Exception:
+                pass
+    except Exception:
+        cache_file = None
+
+    run_activity_ids = []
+
+    page = 1
+    while page <= 3:  # max 300 activities from summary
+        resp = requests.get(
+            "https://www.strava.com/api/v3/athlete/activities",
+            headers=headers,
+            params={"per_page": 100, "page": page},
+            timeout=15
+        )
+        try:
+            activities = resp.json()
+        except Exception:
+            break
+        if not activities or not isinstance(activities, list):
+            break
+
+        for act in activities:
+            if act.get("type") not in ("Run", "VirtualRun", "TrailRun"):
+                continue
+
+            dist_km = (act.get("distance") or 0) / 1000
+            elapsed = act.get("moving_time") or 0
+            if elapsed == 0:
+                continue
+
+            avg_hr = act.get("average_heartrate")
+            cadence = act.get("average_cadence")
+
+            def _make_entry(d_km):
+                return {
+                    "time":       _seconds_to_time(elapsed),
+                    "pace":       _pace_str(elapsed, d_km),
+                    "date":       (act.get("start_date_local") or "")[:10],
+                    "avg_hr":     round(avg_hr) if avg_hr else None,
+                    "elevation":  round(act.get("total_elevation_gain") or 0) or None,
+                    "cadence":    round(cadence * 2) if cadence else None,
+                    "strava_url": f"https://www.strava.com/activities/{act['id']}",
+                    "_elapsed":   elapsed,
+                }
+
+            for key, (lo, hi) in dist_ranges.items():
+                if lo <= dist_km <= hi:
+                    if best[key] is None or elapsed < best[key]['_elapsed']:
+                        best[key] = _make_entry(dist_km)
+
+            # Catch short 400m/800m race activities directly from summary
+            for key, (lo, hi) in short_dist_ranges.items():
+                if lo <= dist_km <= hi:
+                    if best[key] is None or elapsed < best[key]['_elapsed']:
+                        best[key] = _make_entry(dist_km)
+
+            run_activity_ids.append(act['id'])
+
+        if len(activities) < 100:
+            break
+        page += 1
+
+    # Fetch best_efforts concurrently for 400m/800m from activity details
+    # Limit to 60 most recent runs; fetch in parallel to keep it fast
+    def _fetch_detail(act_id):
+        try:
+            r = requests.get(
+                f"https://www.strava.com/api/v3/activities/{act_id}",
+                headers=headers,
+                timeout=10
+            )
+            if r.status_code == 200:
+                return r.json()
+        except Exception:
+            pass
+        return None
+
+    ids_to_fetch = run_activity_ids[:90]
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        futures = {pool.submit(_fetch_detail, aid): aid for aid in ids_to_fetch}
+        for future in as_completed(futures):
+            detail = future.result()
+            if not detail:
+                continue
+            efforts = detail.get("best_efforts") or []
+            act_date = (detail.get("start_date_local") or "")[:10]
+            act_url = f"https://www.strava.com/activities/{detail['id']}"
+            avg_hr = detail.get("average_heartrate")
+            cadence = detail.get("average_cadence")
+            elevation = round(detail.get("total_elevation_gain") or 0) or None
+
+            for effort in efforts:
+                name = effort.get("name", "")
+                if name not in best_effort_keys:
+                    continue
+                key = best_effort_keys[name]
+                elapsed = effort.get("elapsed_time") or 0
+                dist_m = effort.get("distance") or 400
+                dist_km_e = dist_m / 1000
+                if elapsed == 0:
+                    continue
+                if best[key] is None or elapsed < best[key]['_elapsed']:
+                    best[key] = {
+                        "time":       _seconds_to_time(elapsed),
+                        "pace":       _pace_str(elapsed, dist_km_e),
+                        "date":       act_date,
+                        "avg_hr":     round(avg_hr) if avg_hr else None,
+                        "elevation":  elevation,
+                        "cadence":    round(cadence * 2) if cadence else None,
+                        "strava_url": act_url,
+                        "_elapsed":   elapsed,
+                    }
+
+    # Remove internal sort key and save cache
+    for k in best:
+        if best[k]:
+            best[k].pop("_elapsed", None)
+
+    try:
+        if cache_file:
+            import json as _json2
+            with cache_file.open('w', encoding='utf-8') as cf:
+                _json2.dump(best, cf)
+    except Exception:
+        pass
+
+    return best
+
+
+# -----------------------------
+# Routes
+# -----------------------------
+@app.route('/')
+def index():
+    recent_logs = BiometricLog.query.order_by(BiometricLog.date.desc()).limit(14).all()
+
+    last_hrv = None
+    avg_hrv_7 = None
+    last_recovery = None
+    last_rhr = None
+
+    if recent_logs:
+        last = recent_logs[0]
+        last_hrv = last.hrv
+        last_recovery = last.recovery
+        last_rhr = last.rhr
+
+        hrvs = [l.hrv for l in recent_logs[:7] if l.hrv is not None]
+        if hrvs:
+            avg_hrv_7 = sum(hrvs) / len(hrvs)
+
+    week_ago = date.today() - timedelta(days=6)
+    trainings_week = TrainingLog.query.filter(TrainingLog.date >= week_ago).all()
+    weekly_km = sum((t.distance_km or 0.0) for t in trainings_week)
+
+    return render_template(
+        'index.html',
+        weekly_km=round(weekly_km, 1),
+        last_hrv=last_hrv,
+        avg_hrv_7=round(avg_hrv_7, 1) if avg_hrv_7 is not None else None,
+        last_recovery=last_recovery,
+        last_rhr=last_rhr,
+        recent_logs=recent_logs[:5],
+        strava_logged_in=bool(session.get('strava_access_token'))
+    )
+
+
+@app.route('/log', methods=['GET', 'POST'])
+def log_data():
+    if request.method == 'POST':
+        hrv = request.form.get('hrv', type=float)
+        recovery = request.form.get('recovery', type=int)
+        rhr = request.form.get('rhr', type=int)
+
+        if hrv is not None:
+            new_log = BiometricLog(
+                hrv=hrv,
+                recovery=recovery if recovery is not None else 0,
+                rhr=rhr
+            )
+            db.session.add(new_log)
+            db.session.commit()
+            flash('Záznam uložený', 'success')
+
+        return redirect(url_for('log_data'))
+
+    logs = BiometricLog.query.order_by(BiometricLog.date.desc()).limit(5).all()
+    return render_template('log.html', logs=logs)
+
+
+@app.route('/import-whoop', methods=['POST'])
+def import_whoop():
+    f = request.files.get('whoop_csv')
+    if not f or not f.filename.endswith('.csv'):
+        flash('Vyber platný CSV súbor z WHOOP.', 'danger')
+        return redirect(url_for('log_data'))
+
+    import io, csv as csv_mod
+
+    stream = io.StringIO(f.stream.read().decode('utf-8-sig'))
+    reader = csv_mod.DictReader(stream)
+
+    # Mapovanie možných názvov stĺpcov z WHOOP exportu
+    def _find(row, *keys):
+        for k in keys:
+            for col in row:
+                if col.strip().lower() == k.lower():
+                    val = row[col]
+                    return val.strip() if val else None
+        return None
+
+    imported = 0
+    skipped = 0
+
+    for row in reader:
+        # Dátum
+        raw_date = _find(row, 'Cycle start time', 'Date', 'date', 'Day')
+        if not raw_date:
+            skipped += 1
+            continue
+        try:
+            # WHOOP formát: "2024-01-15 06:00:00" alebo "2024-01-15"
+            entry_date = datetime.strptime(raw_date[:10], '%Y-%m-%d').date()
+        except ValueError:
+            skipped += 1
+            continue
+
+        # HRV
+        raw_hrv = _find(row,
+            'Heart rate variability (ms)', 'HRV (ms)', 'hrv', 'Heart Rate Variability (ms)')
+        # Recovery
+        raw_rec = _find(row,
+            'Recovery score %', 'Recovery (%)', 'Recovery score', 'recovery')
+        # RHR
+        raw_rhr = _find(row,
+            'Resting heart rate (bpm)', 'RHR (bpm)', 'Resting Heart Rate (bpm)', 'rhr')
+
+        try:
+            hrv_val = float(raw_hrv) if raw_hrv else None
+        except ValueError:
+            hrv_val = None
+
+        try:
+            rec_val = int(float(raw_rec)) if raw_rec else 0
+        except ValueError:
+            rec_val = 0
+
+        try:
+            rhr_val = int(float(raw_rhr)) if raw_rhr else None
+        except ValueError:
+            rhr_val = None
+
+        if hrv_val is None:
+            skipped += 1
+            continue
+
+        # Preskočí duplicitný záznam pre ten istý deň
+        existing = BiometricLog.query.filter_by(date=entry_date).first()
+        if existing:
+            skipped += 1
+            continue
+
+        db.session.add(BiometricLog(
+            date=entry_date,
+            hrv=hrv_val,
+            recovery=rec_val,
+            rhr=rhr_val
+        ))
+        imported += 1
+
+    db.session.commit()
+    flash(f'Import dokončený: {imported} záznamov pridaných, {skipped} preskočených.', 'success')
+    return redirect(url_for('log_data'))
+
+
+@app.route('/trainings', methods=['GET', 'POST'])
+def trainings():
+    if request.method == 'POST':
+        t_type = request.form.get('training_type')
+        dist = request.form.get('distance_km', type=float)
+        dur_min = request.form.get('dur_min', type=int)
+        dur_sec = request.form.get('dur_sec', type=int)
+        dur_hun = request.form.get('dur_hun', type=int)
+        notes = request.form.get('notes')
+
+        intervals = request.form.getlist('interval_times[]')
+        intervals_clean = [i for i in intervals if i.strip()]
+        intervals_str = ','.join(intervals_clean) if intervals_clean else None
+
+        final_sec = None
+        if dur_sec is not None or dur_hun is not None:
+            final_sec = float((dur_sec or 0) + (dur_hun or 0) / 100.0)
+
+        if t_type:
+            new_log = TrainingLog(
+                training_type=t_type,
+                distance_km=dist,
+                duration_min=dur_min,
+                duration_sec=final_sec,
+                intervals_data=intervals_str,
+                notes=notes
+            )
+            db.session.add(new_log)
+            db.session.commit()
+            return redirect(url_for('trainings'))
+
+    all_trainings = TrainingLog.query.order_by(TrainingLog.date.desc()).all()
+
+    grouped_trainings = {}
+    for t in all_trainings:
+        grouped_trainings.setdefault(t.training_type, []).append(t)
+
+    return render_template('trainings.html', grouped_trainings=grouped_trainings)
+
+
+@app.route('/charts')
+def charts():
+    logs = BiometricLog.query.order_by(BiometricLog.date.asc()).all()
+    dates = [log.date.strftime('%Y-%m-%d') for log in logs]
+    hrv_data = [log.hrv for log in logs]
+    recovery_data = [log.recovery for log in logs]
+
+    return render_template(
+        'charts.html',
+        dates=dates,
+        hrv_data=hrv_data,
+        recovery_data=recovery_data
+    )
+
+
+@app.route('/ai')
+def ai_portal():
+    return render_template('ai.html')
+
+
+
+@app.route('/strava/login')
+def strava_login():
+    if session.get('strava_access_token'):
+        return redirect(url_for('dashboard'))
+
+    if not STRAVA_CLIENT_ID or not STRAVA_REDIRECT_URI:
+        return "Server not configured for Strava OAuth.", 500
+
+    from urllib.parse import urlencode
+
+    params = {
+        'client_id': STRAVA_CLIENT_ID,
+        'response_type': 'code',
+        'redirect_uri': STRAVA_REDIRECT_URI,
+        'scope': 'read,activity:read_all',
+        'approval_prompt': 'force'
+    }
+    auth_url = f"https://www.strava.com/oauth/authorize?{urlencode(params)}"
+    return redirect(auth_url)
+
+
+@app.route('/strava/callback')
+def strava_authorized():
+    code = request.args.get('code')
+    if not code:
+        return "Chyba: Nedostal som autorizačný kód.", 400
+
+    try:
+        client = Client()
+        token_response = client.exchange_code_for_token(
+            client_id=STRAVA_CLIENT_ID,
+            client_secret=STRAVA_CLIENT_SECRET,
+            code=code
+        )
+
+        athlete = token_response.get('athlete', {})
+        athlete_id = str(athlete.get('id')) if athlete.get('id') else None
+
+        session['strava_access_token'] = token_response['access_token']
+        session['strava_refresh_token'] = token_response['refresh_token']
+        session['strava_expires_at'] = token_response['expires_at']
+        session['strava_athlete_id'] = athlete_id
+
+        if athlete_id:
+            token_row = StravaToken.query.filter_by(athlete_id=athlete_id).first()
+            if not token_row:
+                token_row = StravaToken(
+                    athlete_id=athlete_id,
+                    access_token=token_response['access_token'],
+                    refresh_token=token_response['refresh_token'],
+                    expires_at=token_response['expires_at']
+                )
+                db.session.add(token_row)
+            else:
+                token_row.access_token = token_response['access_token']
+                token_row.refresh_token = token_response['refresh_token']
+                token_row.expires_at = token_response['expires_at']
+
+            db.session.commit()
+
+        flash("Úspešne si sa prepojil so Stravou!", "success")
+        return redirect(url_for('dashboard'))
+
+    except Exception as e:
+        return f"Chyba pri komunikácii so Stravou: {e}", 500
+
+
+@app.route('/dashboard')
+def dashboard():
+    athlete_id = session.get('strava_athlete_id')
+    token = session.get('strava_access_token')
+
+    if not token and not athlete_id:
+        flash("Najskôr sa musíš prihlásiť cez Stravu.", "warning")
+        return redirect(url_for('index'))
+
+    if athlete_id:
+        try:
+            token = get_valid_access_token(athlete_id)
+        except Exception:
+            session.clear()
+            flash("Platnosť prihlásenia vypršala. Prihlás sa znova.", "warning")
+            return redirect(url_for('index'))
+
+    if not token:
+        flash("Najskôr sa musíš prihlásiť cez Stravu.", "warning")
+        return redirect(url_for('index'))
+
+    client = Client()
+    client.access_token = token
+
+    try:
+        activities = list(client.get_activities(limit=10))
+
+        my_trainings = []
+        for act in activities:
+            hr = getattr(act, 'average_heartrate', None)
+            my_trainings.append({
+                'name': act.name,
+                'type': act.type,
+                'distance': round(float(act.distance) / 1000, 2),
+                'moving_time': f"{int(act.moving_time)//60}:{int(act.moving_time)%60:02d}",
+                'pace': pace_from_speed(act.average_speed),
+                'hr': int(hr) if hr else None,
+                'date': act.start_date.strftime("%d.%m.%Y %H:%M")
+            })
+
+        return render_template(
+            'dashboard.html',
+            trainings=my_trainings,
+            logged_in=True
+        )
+
+    except Exception as e:
+        print(f"Chyba pri načítaní aktivít: {repr(e)}")
+        return f"Nepodarilo sa načítať tréningy: {repr(e)}"
+
+
+@app.route('/osobaky')
+def osobaky():
+    athlete_id = session.get('strava_athlete_id')
+    token = session.get('strava_access_token')
+
+    if athlete_id:
+        try:
+            token = get_valid_access_token(athlete_id)
+        except Exception:
+            session.clear()
+            flash("Platnosť prihlásenia vypršala. Prihlás sa znova.", "warning")
+            return redirect(url_for('index'))
+
+    if not token:
+        flash("Najskôr sa musíš prihlásiť cez Stravu.", "warning")
+        return redirect(url_for('strava_login'))
+
+    # ?refresh=1 vymaže cache a načíta znova
+    if request.args.get('refresh') == '1':
+        try:
+            from pathlib import Path
+            cache_dir = Path('cache')
+            athlete_hint = (token or '')[-8:]
+            cache_file = cache_dir / f'prs_{athlete_hint}.json'
+            if cache_file.exists():
+                cache_file.unlink()
+        except Exception:
+            pass
+
+    prs = {}
+    error = None
+
+    try:
+        prs = get_strava_prs(token)
+    except Exception as e:
+        print(f"[WARN] PR fetch failed: {e}")
+        error = "Nepodarilo sa načítať osobné rekordy zo Stravy."
+
+    return render_template('osobaky.html', prs=prs, error=error)
+
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    session.modified = True
+    flash("Bol si odhlásený.", "success")
+    return redirect(url_for('index'))
+
+
+@app.route('/api/debug-prs')
+def debug_prs():
+    """Debug endpoint — ukáže čo Strava vracia pre best_efforts posledných 5 behov."""
+    token = session.get('strava_access_token')
+    athlete_id = session.get('strava_athlete_id')
+    if athlete_id:
+        try:
+            token = get_valid_access_token(athlete_id)
+        except Exception:
+            pass
+    if not token:
+        return jsonify({'error': 'Nie si prihlásený cez Stravu'}), 401
+
+    headers = {"Authorization": f"Bearer {token}"}
+    resp = requests.get(
+        "https://www.strava.com/api/v3/athlete/activities",
+        headers=headers,
+        params={"per_page": 10, "page": 1},
+        timeout=15
+    )
+    activities = resp.json() if resp.status_code == 200 else []
+
+    results = []
+    for act in activities:
+        if act.get("type") not in ("Run", "VirtualRun", "TrailRun"):
+            continue
+        detail_resp = requests.get(
+            f"https://www.strava.com/api/v3/activities/{act['id']}",
+            headers=headers,
+            timeout=10
+        )
+        if detail_resp.status_code != 200:
+            continue
+        detail = detail_resp.json()
+        efforts = detail.get("best_efforts") or []
+        results.append({
+            'activity_name': act.get('name'),
+            'distance_km': round((act.get('distance') or 0) / 1000, 2),
+            'moving_time': act.get('moving_time'),
+            'best_efforts': [
+                {'name': e.get('name'), 'elapsed_time': e.get('elapsed_time'), 'distance_m': e.get('distance')}
+                for e in efforts
+            ]
+        })
+        if len(results) >= 5:
+            break
+
+    return jsonify(results)
+
+
+def decode_polyline(encoded):
+    points = []
+    index = 0
+    lat = lng = 0
+    while index < len(encoded):
+        for coord_idx in range(2):
+            shift = result = 0
+            while True:
+                b = ord(encoded[index]) - 63
+                index += 1
+                result |= (b & 0x1f) << shift
+                shift += 5
+                if b < 32:
+                    break
+            value = ~(result >> 1) if result & 1 else result >> 1
+            if coord_idx == 0:
+                lat += value
+            else:
+                lng += value
+        points.append([round(lat / 1e5, 5), round(lng / 1e5, 5)])
+    return points
+
+
+@app.route('/heatmap')
+def heatmap():
+    athlete_id = session.get('strava_athlete_id')
+    token = session.get('strava_access_token')
+    if not token and not athlete_id:
+        flash("Najskôr sa musíš prihlásiť cez Stravu.", "warning")
+        return redirect(url_for('strava_login'))
+    return render_template('heatmap.html')
+
+
+@app.route('/api/heatmap-data')
+def heatmap_data():
+    athlete_id = session.get('strava_athlete_id')
+    token = session.get('strava_access_token')
+
+    if athlete_id:
+        try:
+            token = get_valid_access_token(athlete_id)
+        except Exception:
+            return jsonify({'error': 'Prihlásenie vypršalo'}), 401
+
+    if not token:
+        return jsonify({'error': 'Nie si prihlásený'}), 401
+
+    headers = {'Authorization': f'Bearer {token}'}
+    all_points = []
+    activity_count = 0
+    page = 1
+
+    while True:
+        resp = requests.get(
+            'https://www.strava.com/api/v3/athlete/activities',
+            headers=headers,
+            params={'per_page': 100, 'page': page},
+            timeout=20
+        )
+        if resp.status_code != 200:
+            break
+        activities = resp.json()
+        if not activities or not isinstance(activities, list):
+            break
+
+        for act in activities:
+            if act.get('type') not in ('Run', 'VirtualRun', 'TrailRun'):
+                continue
+            polyline = (act.get('map') or {}).get('summary_polyline') or ''
+            if not polyline:
+                continue
+            try:
+                pts = decode_polyline(polyline)
+                all_points.extend(pts[::2])
+                activity_count += 1
+            except Exception:
+                continue
+
+        page += 1
+        if len(activities) < 100:
+            break
+
+    return jsonify({
+        'points': all_points,
+        'activity_count': activity_count,
+    })
+
+
+@app.route('/api/readiness')
+def readiness():
+    today = date.today()
+    today_log = BiometricLog.query.filter_by(date=today).order_by(BiometricLog.id.desc()).first()
+    if not today_log:
+        today_log = BiometricLog.query.order_by(BiometricLog.date.desc()).first()
+
+    if not today_log:
+        return jsonify({'error': 'Žiadne dáta. Najprv si zaloguj HRV a recovery.'}), 404
+
+    cutoff = today - timedelta(days=30)
+    logs_30 = BiometricLog.query.filter(BiometricLog.date >= cutoff).all()
+    hrv_values = [l.hrv for l in logs_30 if l.hrv is not None]
+    avg_hrv = sum(hrv_values) / len(hrv_values) if hrv_values else today_log.hrv
+
+    hrv_ratio = today_log.hrv / avg_hrv if avg_hrv else 1.0
+    hrv_ratio = max(0.5, min(1.5, hrv_ratio))
+    hrv_score = ((hrv_ratio - 0.5) / 1.0) * 60
+
+    recovery = today_log.recovery or 50
+    recovery_score = recovery * 0.4
+
+    readiness_pct = round(min(100, max(0, hrv_score + recovery_score)))
+
+    if readiness_pct >= 80:
+        label = "Trénuj naplno"
+        sublabel = "Si výborne zregenerovaný. Ideálny deň na intenzívny tréning alebo preteky."
+        color = "green"
+        icon = "rocket_launch"
+    elif readiness_pct >= 60:
+        label = "Stredný tréning"
+        sublabel = "Dobrá forma. Vhodné tempové behy alebo stredné intervaly."
+        color = "yellow"
+        icon = "directions_run"
+    elif readiness_pct >= 40:
+        label = "Ľahký tréning"
+        sublabel = "Telo ešte regeneruje. Odporúčam ľahký klus alebo strečing."
+        color = "orange"
+        icon = "self_improvement"
+    else:
+        label = "Oddychuj"
+        sublabel = "HRV a recovery sú nízke. Dnes je lepší aktívny odpočinok než tréning."
+        color = "red"
+        icon = "bedtime"
+
+    hrv_diff = round(today_log.hrv - avg_hrv, 1)
+    hrv_diff_str = f"+{hrv_diff}" if hrv_diff >= 0 else str(hrv_diff)
+
+    return jsonify({
+        'readiness': readiness_pct,
+        'label': label,
+        'sublabel': sublabel,
+        'color': color,
+        'icon': icon,
+        'hrv': round(today_log.hrv, 1),
+        'hrv_avg_30': round(avg_hrv, 1),
+        'hrv_diff': hrv_diff_str,
+        'recovery': recovery,
+        'rhr': today_log.rhr,
+        'log_date': today_log.date.strftime('%d.%m.%Y'),
+        'days_of_data': len(hrv_values),
+    })
+
+
+CHAT_SYSTEM_PROMPT = """Si osobný tréner a výkonnostný analytik pre šprintéra/bežca. Komunikuješ VÝLUČNE po slovensky.
+
+## TVOJA ROLA
+Analyzeš konkrétne dáta atleta (HRV, recovery, RHR, tréningy) a dávaš presné, akčné odporúčania. Nie generické rady — vždy vychádzaj z čísel ktoré máš.
+
+## PRAVIDLÁ ODPOVEDÍ
+1. Vždy po slovensky, nikdy po anglicky
+2. Odpovedaj stručne a konkrétne — max 3-4 odstavce
+3. Ak máš dáta atleta, MUSÍŠ ich použiť (cituj konkrétne HRV, recovery %)
+4. Dávaj konkrétne čísla: "bež 6×200m v 28-29s" nie "rob intervaly"
+5. Nezačínaj odpoveď s "Samozrejme" ani "Určite" — choď rovno k veci
+6. Ak niečo nevieš presne, povedz to a navrhni alternatívu
+
+## ODBORNÉ ZNALOSTI
+
+### HRV interpretácia pre šprint:
+- HRV >80ms = výborná forma, trénuj intenzívne
+- HRV 60-80ms = dobrá forma, stredná intenzita
+- HRV 40-60ms = únava, ľahký tréning alebo regenerácia
+- HRV <40ms = STOP intenzívny tréning, aktívna regenerácia
+- Pokles >15% oproti priemeru = varuj atleta
+
+### Recovery (WHOOP) interpretácia:
+- Zelená (67-100%) = trénovať naplno
+- Žltá (34-66%) = stredná intenzita, sledovať únavu
+- Červená (0-33%) = regenerácia, nič ťažké
+
+### RHR trendy:
+- Zvýšenie RHR o 5+ bpm oproti priemeru = začínajúce ochorenie alebo pretrénovanie
+- Klesajúci RHR cez týždne = zlepšenie aeróbnej zdatnosti
+
+### 400m šprint tréning:
+- Intenzity: A=>95% max, B=85-95%, C=75-85%, D=<75%
+- Týždenná štruktúra: 1-2x A, 1-2x B, 1x regenerácia
+- Kľúčové sedenia: špeciálna vytrvalosť (200-600m úseky), rýchlostná vytrvalosť (100-200m úseky)
+- Objem pred pretekmi: znížiť o 40-60% 7-10 dní pred
+- Regenerácia po závode: 3-5 dní ľahký tréning
+
+### Výživa pre šprint:
+- Pred tréningom: 3-4h pred jedlo, 1h pred ľahká sacharidová sačinka
+- Po intenzívnom tréningu: proteín do 30min, sacharidy do 2h
+- Hydratácia: 500ml 2h pred, 200ml každých 15min pri cvičení
+
+## PRÍKLADY SPRÁVNYCH ODPOVEDÍ
+
+Otázka: "Ako vyzerá môj HRV dnes?"
+Správna odpoveď: "Tvoje dnešné HRV je [X]ms, čo je [nad/pod] tvojim 30-dňovým priemerom [Y]ms o [Z]%. [Ak nad priemerom:] Telo je dobre zregenerované — ideálny deň na intenzívny tréning. [Ak pod:] Odporúčam znížiť intenzitu — maximálne tempový beh v zóne 2-3."
+
+Otázka: "Čo mám robiť dnes?"
+Správna odpoveď: [vždy vychádza z aktuálnych dát recovery a HRV z kontextu]"""
+
+
+@app.route('/api/biometric-history')
+def biometric_history():
+    days = request.args.get('days', type=int)  # 0 or None = all time
+    today = date.today()
+
+    def safe_avg(vals): return round(sum(vals) / len(vals), 1) if vals else None
+    def safe_max(vals): return max(vals) if vals else None
+    def safe_min(vals): return min(vals) if vals else None
+
+    def moving_avg(points, window=7):
+        result = []
+        for i, pt in enumerate(points):
+            vals = [p['y'] for p in points[max(0, i - window + 1):i + 1] if p['y'] is not None]
+            result.append({'x': pt['x'], 'y': round(sum(vals) / len(vals), 1) if vals else None})
+        return result
+
+    # Current period
+    query = BiometricLog.query.order_by(BiometricLog.date.asc())
+    if days and days > 0:
+        query = query.filter(BiometricLog.date >= today - timedelta(days=days))
+    logs = query.all()
+
+    # Previous equivalent period (for comparison overlay)
+    prev_logs = []
+    if days and days > 0:
+        prev_start = today - timedelta(days=days * 2)
+        prev_end   = today - timedelta(days=days)
+        prev_logs = BiometricLog.query.filter(
+            BiometricLog.date >= prev_start,
+            BiometricLog.date < prev_end
+        ).order_by(BiometricLog.date.asc()).all()
+
+    hrv_pts = [{'x': l.date.strftime('%Y-%m-%d'), 'y': l.hrv} for l in logs]
+    rhr_pts = [{'x': l.date.strftime('%Y-%m-%d'), 'y': l.rhr} for l in logs]
+    rec_pts = [{'x': l.date.strftime('%Y-%m-%d'), 'y': l.recovery} for l in logs]
+
+    # Previous period — align to same relative day index for overlay
+    prev_hrv = [{'x': logs[i].date.strftime('%Y-%m-%d') if i < len(logs) else None, 'y': p.hrv}
+                for i, p in enumerate(prev_logs)]
+    prev_rhr = [{'x': logs[i].date.strftime('%Y-%m-%d') if i < len(logs) else None, 'y': p.rhr}
+                for i, p in enumerate(prev_logs)]
+
+    hrv_vals = [l.hrv for l in logs if l.hrv is not None]
+    rhr_vals = [l.rhr for l in logs if l.rhr is not None]
+    rec_vals = [l.recovery for l in logs if l.recovery is not None]
+
+    # Trend: first half vs second half of selected period
+    mid = len(logs) // 2
+    first_hrv = [l.hrv for l in logs[:mid] if l.hrv]
+    second_hrv = [l.hrv for l in logs[mid:] if l.hrv]
+    hrv_trend_pct = round(((safe_avg(second_hrv) or 0) - (safe_avg(first_hrv) or 0)) /
+                          (safe_avg(first_hrv) or 1) * 100, 1) if first_hrv and second_hrv else None
+
+    first_rhr = [l.rhr for l in logs[:mid] if l.rhr]
+    second_rhr = [l.rhr for l in logs[mid:] if l.rhr]
+    rhr_trend_pct = round(((safe_avg(second_rhr) or 0) - (safe_avg(first_rhr) or 0)) /
+                          (safe_avg(first_rhr) or 1) * 100, 1) if first_rhr and second_rhr else None
+
+    # Green/yellow/red recovery distribution
+    green_days  = sum(1 for l in logs if l.recovery and l.recovery >= 67)
+    yellow_days = sum(1 for l in logs if l.recovery and 34 <= l.recovery < 67)
+    red_days    = sum(1 for l in logs if l.recovery and l.recovery < 34)
+
+    return jsonify({
+        'hrv':     hrv_pts,
+        'hrv_ma7': moving_avg(hrv_pts),
+        'rhr':     rhr_pts,
+        'rhr_ma7': moving_avg(rhr_pts),
+        'recovery':     rec_pts,
+        'recovery_ma7': moving_avg(rec_pts),
+        'prev_hrv': prev_hrv,
+        'prev_rhr': prev_rhr,
+        'date_range': {
+            'start': logs[0].date.strftime('%d.%m.%Y') if logs else None,
+            'end':   logs[-1].date.strftime('%d.%m.%Y') if logs else None,
+        },
+        'stats': {
+            'hrv_avg': safe_avg(hrv_vals),
+            'hrv_max': safe_max(hrv_vals),
+            'hrv_min': safe_min(hrv_vals),
+            'rhr_avg': safe_avg(rhr_vals),
+            'rhr_min': safe_min(rhr_vals),
+            'rhr_max': safe_max(rhr_vals),
+            'rec_avg': safe_avg(rec_vals),
+            'count':   len(logs),
+            'hrv_trend_pct': hrv_trend_pct,
+            'rhr_trend_pct': rhr_trend_pct,
+            'prev_hrv_avg': safe_avg([p.hrv for p in prev_logs if p.hrv]),
+            'prev_rhr_avg': safe_avg([p.rhr for p in prev_logs if p.rhr]),
+            'green_days':  green_days,
+            'yellow_days': yellow_days,
+            'red_days':    red_days,
+        }
+    })
+
+
+@app.route('/biometrics')
+def biometrics():
+    return render_template('biometrics.html')
+
+
+@app.route('/api/chat', methods=['POST'])
+def chat():
+    data = request.json or {}
+    message = data.get('message', '').strip()
+    history = data.get('history', [])
+
+    if not message:
+        return jsonify({'error': 'Prázdna správa'}), 400
+
+    api_key = os.getenv('GROQ_API_KEY', '')
+    if not api_key or api_key.startswith('gsk_...'):
+        return jsonify({'error': 'GROQ_API_KEY nie je nastavený v .env súbore'}), 500
+
+    # Build rich athlete context — biometrics + recent training sessions
+    athlete_context = ""
+    try:
+        today_d = date.today()
+
+        # Biometric data (30 days)
+        logs_30 = BiometricLog.query.filter(
+            BiometricLog.date >= today_d - timedelta(days=30)
+        ).order_by(BiometricLog.date.desc()).all()
+
+        # Recent training logs (14 days)
+        train_logs = TrainingLog.query.filter(
+            TrainingLog.date >= today_d - timedelta(days=14)
+        ).order_by(TrainingLog.date.desc()).limit(10).all()
+
+        def avg(v): return round(sum(v)/len(v), 1) if v else None
+
+        if logs_30 or train_logs:
+            athlete_context = "\n\n## AKTUÁLNE DÁTA ATLETA\n"
+
+        if logs_30:
+            hrv_30 = [l.hrv for l in logs_30 if l.hrv]
+            rhr_30 = [l.rhr for l in logs_30 if l.rhr]
+            rec_30 = [l.recovery for l in logs_30 if l.recovery]
+            week1  = [l for l in logs_30 if l.date >= today_d - timedelta(days=7)]
+            week2  = [l for l in logs_30 if today_d - timedelta(days=14) <= l.date < today_d - timedelta(days=7)]
+            hrv_w1 = [l.hrv for l in week1 if l.hrv]
+            hrv_w2 = [l.hrv for l in week2 if l.hrv]
+            green  = sum(1 for r in rec_30 if r >= 67)
+            yellow = sum(1 for r in rec_30 if 34 <= r < 67)
+            red    = sum(1 for r in rec_30 if r < 34)
+
+            trend_str = ""
+            if hrv_w1 and hrv_w2:
+                diff = (avg(hrv_w1) or 0) - (avg(hrv_w2) or 0)
+                trend_str = f"{'↑' if diff > 0 else '↓'} {abs(round(diff,1))}ms vs minulý týždeň"
+
+            athlete_context += f"""
+### Biometrika (posledných 30 dní, {len(logs_30)} záznamov)
+HRV: priemer={avg(hrv_30)}ms | tento týždeň={avg(hrv_w1)}ms | {trend_str}
+RHR: priemer={avg(rhr_30)}bpm | min={min(rhr_30) if rhr_30 else '?'}bpm
+Recovery: zelená={green}d | žltá={yellow}d | červená={red}d | priemer={avg(rec_30)}%
+
+Posledných 7 dní:"""
+            for log in logs_30[:7]:
+                status = "🟢" if (log.recovery or 0) >= 67 else "🟡" if (log.recovery or 0) >= 34 else "🔴"
+                athlete_context += f"\n  {log.date.strftime('%d.%m')}: HRV={log.hrv}ms, Recovery={log.recovery}% {status}, RHR={log.rhr or '?'}bpm"
+
+        if train_logs:
+            athlete_context += "\n\n### Posledné tréningy (14 dní):"
+            for t in train_logs:
+                dur = ""
+                if t.duration_min:
+                    dur = f" {t.duration_min}min"
+                    if t.duration_sec:
+                        dur += f" {int(t.duration_sec)}s"
+                dist = f" {t.distance_km}km" if t.distance_km else ""
+                intervals = f" [{t.intervals_data}]" if t.intervals_data else ""
+                notes = f" — {t.notes}" if t.notes else ""
+                athlete_context += f"\n  {t.date.strftime('%d.%m')} {t.training_type}:{dist}{dur}{intervals}{notes}"
+
+        if athlete_context:
+            athlete_context += "\n\n[Používaj tieto dáta pri každej odpovedi — sú kľúčové pre personalizované rady]"
+
+    except Exception:
+        pass
+
+    # DeepSeek R1 — reasoning model, oveľa spoľahlivejší ako llama pre analytické otázky
+    # Fallback na llama ak DeepSeek nie je dostupný
+    MODELS = [
+        'deepseek-r1-distill-llama-70b',
+        'llama-3.3-70b-versatile',
+    ]
+
+    messages = [{"role": "system", "content": CHAT_SYSTEM_PROMPT + athlete_context}]
+    messages += history[-16:]
+    messages.append({"role": "user", "content": message})
+
+    last_error = None
+    for model_name in MODELS:
+        try:
+            resp = requests.post(
+                'https://api.groq.com/openai/v1/chat/completions',
+                headers={
+                    'Authorization': f'Bearer {api_key}',
+                    'Content-Type': 'application/json'
+                },
+                json={
+                    'model': model_name,
+                    'messages': messages,
+                    'max_tokens': 1500,
+                    'temperature': 0.3,   # nízka teplota = konzistentné, faktické odpovede
+                },
+                timeout=40
+            )
+            if resp.status_code == 401:
+                return jsonify({'error': 'Neplatný Groq API kľúč'}), 401
+            if resp.status_code == 200:
+                reply = resp.json()['choices'][0]['message']['content']
+                # DeepSeek R1 wraps thinking in <think>...</think> — remove it
+                import re as _re
+                reply = _re.sub(r'<think>.*?</think>', '', reply, flags=_re.DOTALL).strip()
+                return jsonify({'reply': reply, 'model': model_name})
+            last_error = f"HTTP {resp.status_code}"
+        except Exception as e:
+            last_error = str(e)
+            continue
+
+    return jsonify({'error': f'Chyba: {last_error}'}), 500
+
+
+if __name__ == '__main__':
+    # Otvor prehliadač iba raz (v child procese reloadera, nie v parent procese)
+    if os.environ.get('WERKZEUG_RUN_MAIN') == 'true':
+        def _open_browser():
+            time.sleep(1.5)
+            webbrowser.open('http://127.0.0.1:5000')
+        threading.Thread(target=_open_browser, daemon=True).start()
+    app.run(debug=True, port=5000)
