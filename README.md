@@ -28,10 +28,12 @@ Cieľom je vytvoriť softvérový analytický nástroj vo forme webovej aplikác
 ## **Technologický stack**
 
 * **Programovací jazyk:** Python  
-* **Spracovanie dát:** Pandas, Numpy  
-* **Strojové učenie:** Scikit-learn (tvorba a trénovanie modelov)  
-* **Webový framework:** Flask  
-* **Vizualizácia:** Matplotlib, Seaborn
+* **Webový framework:** Flask + Flask-SQLAlchemy  
+* **Databáza:** SQLite  
+* **Strava integrácia:** stravalib  
+* **AI chat:** Groq API (DeepSeek R1 / LLaMA 3.3)  
+* **Mapy:** Leaflet.js (heatmapa behov)  
+* **Frontend:** HTML, CSS, JavaScript
 
 ## **Prínos projektu**
 
@@ -41,7 +43,7 @@ Projekt umožňuje autorovi zlepšiť sa v programovaní a zároveň priamo apli
 
 1. Klonovanie repozitára z GitHubu.  
 2. Inštalácia závislostí cez pip install \-r requirements.txt.  
-3. Konfigurácia API kľúčov v súbore .env.  
+3. Skopíruj `.env.example` ako `.env` a doplň svoje API kľúče.  
 4. Spustenie aplikácie pomocou python app.py.
 
 *Tento dokument slúži ako oficiálne README pre projekt Sprint Predictor AI.*
