@@ -26,19 +26,25 @@
                     <input type="text" id="training_type" name="training_type" placeholder='napr. "3x300m", "10km tempo"' required>
                 </div>
 
-                <div class="grid grid-cols-2 gap-3">
-                    <div>
-                        <label for="distance_km">Vzdialenosť (km)</label>
-                        <input type="number" step="0.01" id="distance_km" name="distance_km" placeholder="napr. 5.5">
-                    </div>
-                    <div>
-                        <label>Výsledný čas</label>
-                        <div class="flex items-center gap-1">
-                            <input type="number" id="dur_min" name="dur_min" placeholder="Min" min="0" style="text-align:center; padding-left:0 !important; padding-right:0 !important;">
-                            <span class="text-on-surface-variant font-black text-lg flex-shrink-0">:</span>
-                            <input type="number" id="dur_sec" name="dur_sec" placeholder="Sek" min="0" max="59" style="text-align:center; padding-left:0 !important; padding-right:0 !important;">
-                            <span class="text-on-surface-variant font-black text-lg flex-shrink-0">.</span>
-                            <input type="number" id="dur_hun" name="dur_hun" placeholder="St" min="0" max="99" style="text-align:center; padding-left:0 !important; padding-right:0 !important;">
+                <div>
+                    <label for="distance_km">Vzdialenosť (km)</label>
+                    <input type="number" step="0.01" id="distance_km" name="distance_km" placeholder="napr. 5.5">
+                </div>
+
+                <div>
+                    <label>Výsledný čas</label>
+                    <div class="grid grid-cols-3 gap-2">
+                        <div>
+                            <span class="text-[10px] text-on-surface-variant font-bold uppercase block mb-1">Minúty</span>
+                            <input type="number" id="dur_min" name="dur_min" placeholder="0" min="0" style="text-align:center;">
+                        </div>
+                        <div>
+                            <span class="text-[10px] text-on-surface-variant font-bold uppercase block mb-1">Sekundy</span>
+                            <input type="number" id="dur_sec" name="dur_sec" placeholder="00" min="0" max="59" style="text-align:center;">
+                        </div>
+                        <div>
+                            <span class="text-[10px] text-on-surface-variant font-bold uppercase block mb-1">Stotiny</span>
+                            <input type="number" id="dur_hun" name="dur_hun" placeholder="00" min="0" max="99" style="text-align:center;">
                         </div>
                     </div>
                 </div>
