@@ -514,10 +514,16 @@ def trainings():
     all_trainings = TrainingLog.query.order_by(TrainingLog.date.desc()).all()
 
     grouped_trainings = {}
+    train_dates = {}
     for t in all_trainings:
         grouped_trainings.setdefault(t.training_type, []).append(t)
+        ds = t.date.strftime('%Y-%m-%d')
+        train_dates.setdefault(ds, []).append(t.training_type)
 
-    return render_template('trainings.html', grouped_trainings=grouped_trainings)
+    import json
+    return render_template('trainings.html',
+                           grouped_trainings=grouped_trainings,
+                           train_dates_json=json.dumps(train_dates))
 
 
 @app.route('/charts')
