@@ -397,71 +397,110 @@ def log_data():
 
 @app.route('/import-whoop', methods=['POST'])
 def import_whoop():
+    import io, csv as csv_mod, re as _re
+
     f = request.files.get('whoop_csv')
     if not f or not f.filename.endswith('.csv'):
         flash('Vyber platný CSV súbor z WHOOP.', 'danger')
         return redirect(url_for('log_data'))
 
-    import io, csv as csv_mod
+    raw = f.stream.read()
 
-    stream = io.StringIO(f.stream.read().decode('utf-8-sig'))
+    # Skúsi viac kódovaní
+    content = None
+    for enc in ('utf-8-sig', 'utf-8', 'latin-1', 'cp1250'):
+        try:
+            content = raw.decode(enc)
+            break
+        except UnicodeDecodeError:
+            continue
+    if content is None:
+        flash('Nepodarilo sa prečítať CSV — neznáme kódovanie súboru.', 'danger')
+        return redirect(url_for('log_data'))
+
+    # Nájde riadok s hlavičkou (niektoré WHOOP exporty majú metadáta na začiatku)
+    lines = content.splitlines()
+    header_idx = 0
+    for i, line in enumerate(lines):
+        low = line.lower()
+        if ('date' in low or 'time' in low) and ('hrv' in low or 'recovery' in low or 'heart' in low):
+            header_idx = i
+            break
+
+    stream = io.StringIO('\n'.join(lines[header_idx:]))
     reader = csv_mod.DictReader(stream)
 
-    # Mapovanie možných názvov stĺpcov z WHOOP exportu
     def _find(row, *keys):
+        """Hľadá stĺpec podľa zoznamu možných názvov (case-insensitive, ignoruje medzery)."""
         for k in keys:
             for col in row:
-                if col.strip().lower() == k.lower():
+                if col.strip().lower() == k.strip().lower():
                     val = row[col]
                     return val.strip() if val else None
         return None
+
+    def _to_float(val):
+        """Vyčistí hodnotu od %, medzier, čiarok a skonvertuje na float."""
+        if not val:
+            return None
+        cleaned = _re.sub(r'[^\d.\-]', '', str(val).strip())
+        try:
+            return float(cleaned) if cleaned else None
+        except ValueError:
+            return None
 
     imported = 0
     skipped = 0
 
     for row in reader:
-        # Dátum
-        raw_date = _find(row, 'Cycle start time', 'Date', 'date', 'Day')
+        # ── Dátum ──
+        raw_date = _find(row,
+            'Cycle start time', 'Date', 'date', 'Day',
+            'cycle_start_time', 'Start Time', 'start_time', 'Datum', 'Dátum')
         if not raw_date:
             skipped += 1
             continue
-        try:
-            # WHOOP formát: "2024-01-15 06:00:00" alebo "2024-01-15"
-            entry_date = datetime.strptime(raw_date[:10], '%Y-%m-%d').date()
-        except ValueError:
+
+        entry_date = None
+        date_str = raw_date.strip()[:10]
+        for fmt in ('%Y-%m-%d', '%d.%m.%Y', '%m/%d/%Y', '%d/%m/%Y', '%Y/%m/%d'):
+            try:
+                entry_date = datetime.strptime(date_str, fmt).date()
+                break
+            except ValueError:
+                continue
+        if entry_date is None:
             skipped += 1
             continue
 
-        # HRV
+        # ── HRV ──
         raw_hrv = _find(row,
-            'Heart rate variability (ms)', 'HRV (ms)', 'hrv', 'Heart Rate Variability (ms)')
-        # Recovery
+            'Heart rate variability (ms)', 'HRV (ms)', 'hrv', 'HRV',
+            'Heart Rate Variability (ms)', 'Heart Rate Variability',
+            'heart_rate_variability_ms', 'hrv_rmssd_ms')
+
+        # ── Recovery ──
         raw_rec = _find(row,
-            'Recovery score %', 'Recovery (%)', 'Recovery score', 'recovery')
-        # RHR
+            'Recovery score %', 'Recovery (%)', 'Recovery score', 'recovery',
+            'Recovery Score %', 'Recovery Score', 'recovery_score', 'Recovery')
+
+        # ── RHR ──
         raw_rhr = _find(row,
-            'Resting heart rate (bpm)', 'RHR (bpm)', 'Resting Heart Rate (bpm)', 'rhr')
+            'Resting heart rate (bpm)', 'RHR (bpm)', 'Resting Heart Rate (bpm)',
+            'rhr', 'RHR', 'resting_heart_rate', 'Resting Heart Rate',
+            'Resting heart rate')
 
-        try:
-            hrv_val = float(raw_hrv) if raw_hrv else None
-        except ValueError:
-            hrv_val = None
+        hrv_val = _to_float(raw_hrv)
+        rec_num = _to_float(raw_rec)
+        rhr_num = _to_float(raw_rhr)
 
-        try:
-            rec_val = int(float(raw_rec)) if raw_rec else 0
-        except ValueError:
-            rec_val = 0
-
-        try:
-            rhr_val = int(float(raw_rhr)) if raw_rhr else None
-        except ValueError:
-            rhr_val = None
+        rec_val = int(rec_num) if rec_num is not None else 0
+        rhr_val = int(rhr_num) if rhr_num is not None else None
 
         if hrv_val is None:
             skipped += 1
             continue
 
-        # Preskočí duplicitný záznam pre ten istý deň
         existing = BiometricLog.query.filter_by(date=entry_date).first()
         if existing:
             skipped += 1
@@ -476,7 +515,18 @@ def import_whoop():
         imported += 1
 
     db.session.commit()
-    flash(f'Import dokončený: {imported} záznamov pridaných, {skipped} preskočených.', 'success')
+
+    if imported == 0:
+        try:
+            stream2 = io.StringIO('\n'.join(lines[header_idx:]))
+            cols = next(csv_mod.reader(stream2))
+            col_str = ', '.join(f'"{c}"' for c in cols[:10])
+            flash(f'Import: 0 pridaných, {skipped} preskočených. Stĺpce v súbore: {col_str}', 'warning')
+        except Exception:
+            flash(f'Import: 0 záznamov. Skontroluj formát CSV súboru.', 'warning')
+    else:
+        flash(f'Import dokončený: {imported} záznamov pridaných, {skipped} preskočených.', 'success')
+
     return redirect(url_for('log_data'))
 
 
