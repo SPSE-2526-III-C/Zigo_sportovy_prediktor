@@ -55,86 +55,96 @@
         </div>
     </div>
 
-    <!-- STAT CARDS -->
-    <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <div class="stat-chip">
-            <p class="text-xs text-on-surface-variant font-bold uppercase tracking-wider mb-1">HRV priemer</p>
-            <p id="s-hrv-avg" class="text-2xl font-extrabold" style="font-family:Lexend;color:#ff7852">—</p>
-            <p class="text-xs text-on-surface-variant mt-0.5">ms · vybrané obdobie</p>
-        </div>
-        <div class="stat-chip">
-            <p class="text-xs text-on-surface-variant font-bold uppercase tracking-wider mb-1">HRV predch. obdobie</p>
-            <p id="s-hrv-week" class="text-2xl font-extrabold text-on-surface" style="font-family:Lexend">—</p>
-            <p id="s-hrv-trend" class="text-xs text-on-surface-variant mt-0.5">porovnanie</p>
-        </div>
-        <div class="stat-chip">
-            <p class="text-xs text-on-surface-variant font-bold uppercase tracking-wider mb-1">RHR priemer</p>
-            <p id="s-rhr-avg" class="text-2xl font-extrabold" style="font-family:Lexend;color:#b8c7ea">—</p>
-            <p class="text-xs text-on-surface-variant mt-0.5">bpm · vybrané obdobie</p>
-        </div>
-        <div class="stat-chip">
-            <p class="text-xs text-on-surface-variant font-bold uppercase tracking-wider mb-1">RHR predch. obdobie</p>
-            <p id="s-rhr-week" class="text-2xl font-extrabold text-on-surface" style="font-family:Lexend">—</p>
-            <p id="s-rhr-trend" class="text-xs text-on-surface-variant mt-0.5">porovnanie</p>
+    <!-- NO DATA STATE -->
+    <div id="no-data-msg" class="hidden">
+        <div class="flex flex-col items-center justify-center py-20 text-center bg-surface-container-low rounded-3xl border border-white/5">
+            <div class="w-20 h-20 rounded-3xl bg-surface-container flex items-center justify-center mb-5">
+                <span class="material-symbols-outlined text-on-surface-variant opacity-30" style="font-size:2.5rem">monitoring</span>
+            </div>
+            <h3 class="font-headline font-bold text-on-surface text-lg mb-2">Žiadne biometrické dáta</h3>
+            <p class="text-sm text-on-surface-variant opacity-70 mb-6 max-w-xs">Importuj <code>physiological_cycles.csv</code> zo svojho WHOOP exportu</p>
+            <a href="/log" class="flex items-center gap-2 bg-primary hover:opacity-90 transition-opacity text-white font-bold px-6 py-3 rounded-2xl text-sm">
+                <span class="material-symbols-outlined text-base">upload_file</span>
+                Importovať WHOOP CSV
+            </a>
         </div>
     </div>
 
-    <!-- HRV CHART -->
-    <div class="chart-card">
-        <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
-            <div>
-                <h2 class="font-bold text-on-surface" style="font-family:Lexend">Heart Rate Variability (HRV)</h2>
-                <p class="text-xs text-on-surface-variant mt-0.5">Denné hodnoty · MA7 · Dlhodobý priemer · Predch. obdobie</p>
-            </div>
-            <div class="flex gap-3 text-xs text-on-surface-variant">
-                <span class="flex items-center gap-1"><span style="display:inline-block;width:10px;height:2px;background:rgba(255,120,82,0.6)"></span>Denné</span>
-                <span class="flex items-center gap-1"><span style="display:inline-block;width:10px;height:2px;background:#ff7852"></span>MA7</span>
-                <span class="flex items-center gap-1"><span style="display:inline-block;width:10px;height:2px;background:#8896b3;border-top:1px dashed #8896b3"></span>Priemer</span>
-                <span class="flex items-center gap-1"><span style="display:inline-block;width:10px;height:2px;background:rgba(255,120,82,0.3)"></span>Predch.</span>
-            </div>
-        </div>
-        <div style="position:relative;height:260px">
-            <canvas id="hrvChart"></canvas>
-        </div>
-    </div>
+    <!-- CHARTS WRAPPER (hidden until data loads) -->
+    <div id="charts-wrapper" class="hidden space-y-6">
 
-    <!-- RHR CHART -->
-    <div class="chart-card">
-        <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
-            <div>
-                <h2 class="font-bold text-on-surface" style="font-family:Lexend">Pokojový Tep (RHR)</h2>
-                <p class="text-xs text-on-surface-variant mt-0.5">Denné hodnoty · 7-dňový kĺzavý priemer</p>
+        <!-- STAT CARDS -->
+        <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div class="stat-chip">
+                <p class="text-xs text-on-surface-variant font-bold uppercase tracking-wider mb-1">HRV priemer</p>
+                <p id="s-hrv-avg" class="text-2xl font-extrabold" style="font-family:Lexend;color:#ff7852">—</p>
+                <p class="text-xs text-on-surface-variant mt-0.5">ms · vybrané obdobie</p>
             </div>
-            <div class="flex gap-4 text-xs text-on-surface-variant">
-                <span>🔵 Denné</span>
-                <span>💙 MA7</span>
+            <div class="stat-chip">
+                <p class="text-xs text-on-surface-variant font-bold uppercase tracking-wider mb-1">HRV predch. obdobie</p>
+                <p id="s-hrv-week" class="text-2xl font-extrabold text-on-surface" style="font-family:Lexend">—</p>
+                <p id="s-hrv-trend" class="text-xs text-on-surface-variant mt-0.5">porovnanie</p>
+            </div>
+            <div class="stat-chip">
+                <p class="text-xs text-on-surface-variant font-bold uppercase tracking-wider mb-1">RHR priemer</p>
+                <p id="s-rhr-avg" class="text-2xl font-extrabold" style="font-family:Lexend;color:#b8c7ea">—</p>
+                <p class="text-xs text-on-surface-variant mt-0.5">bpm · vybrané obdobie</p>
+            </div>
+            <div class="stat-chip">
+                <p class="text-xs text-on-surface-variant font-bold uppercase tracking-wider mb-1">RHR predch. obdobie</p>
+                <p id="s-rhr-week" class="text-2xl font-extrabold text-on-surface" style="font-family:Lexend">—</p>
+                <p id="s-rhr-trend" class="text-xs text-on-surface-variant mt-0.5">porovnanie</p>
             </div>
         </div>
-        <div style="position:relative;height:260px">
-            <canvas id="rhrChart"></canvas>
-        </div>
-    </div>
 
-    <!-- RECOVERY CHART -->
-    <div class="chart-card">
-        <div class="mb-4">
-            <h2 class="font-bold text-on-surface" style="font-family:Lexend">Recovery Score (%)</h2>
-            <p class="text-xs text-on-surface-variant mt-0.5">WHOOP denné recovery skóre</p>
+        <!-- HRV CHART -->
+        <div class="chart-card">
+            <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
+                <div>
+                    <h2 class="font-bold text-on-surface" style="font-family:Lexend">Heart Rate Variability (HRV)</h2>
+                    <p class="text-xs text-on-surface-variant mt-0.5">Denné hodnoty · MA7 · Dlhodobý priemer · Predch. obdobie</p>
+                </div>
+                <div class="flex gap-3 text-xs text-on-surface-variant">
+                    <span class="flex items-center gap-1"><span style="display:inline-block;width:10px;height:2px;background:rgba(255,120,82,0.6)"></span>Denné</span>
+                    <span class="flex items-center gap-1"><span style="display:inline-block;width:10px;height:2px;background:#ff7852"></span>MA7</span>
+                    <span class="flex items-center gap-1"><span style="display:inline-block;width:10px;height:2px;background:#8896b3;border-top:1px dashed #8896b3"></span>Priemer</span>
+                    <span class="flex items-center gap-1"><span style="display:inline-block;width:10px;height:2px;background:rgba(255,120,82,0.3)"></span>Predch.</span>
+                </div>
+            </div>
+            <div style="position:relative;height:260px">
+                <canvas id="hrvChart"></canvas>
+            </div>
         </div>
-        <div style="position:relative;height:200px">
-            <canvas id="recChart"></canvas>
+
+        <!-- RHR CHART -->
+        <div class="chart-card">
+            <div class="flex items-center justify-between mb-4 flex-wrap gap-2">
+                <div>
+                    <h2 class="font-bold text-on-surface" style="font-family:Lexend">Pokojový Tep (RHR)</h2>
+                    <p class="text-xs text-on-surface-variant mt-0.5">Denné hodnoty · 7-dňový kĺzavý priemer</p>
+                </div>
+                <div class="flex gap-4 text-xs text-on-surface-variant">
+                    <span>🔵 Denné</span>
+                    <span>💙 MA7</span>
+                </div>
+            </div>
+            <div style="position:relative;height:260px">
+                <canvas id="rhrChart"></canvas>
+            </div>
         </div>
-    </div>
 
-    <div id="no-data-msg" class="hidden text-center py-12">
-        <p class="text-4xl mb-3">📊</p>
-        <p class="font-bold text-on-surface-variant">Žiadne biometrické dáta</p>
-        <p class="text-sm text-on-surface-variant mt-1 opacity-60">Najprv importuj dáta cez <a href="/log" class="text-primary underline">Logovanie → Import z WHOOP</a></p>
-    </div>
+        <!-- RECOVERY CHART -->
+        <div class="chart-card">
+            <div class="mb-4">
+                <h2 class="font-bold text-on-surface" style="font-family:Lexend">Recovery Score (%)</h2>
+                <p class="text-xs text-on-surface-variant mt-0.5">WHOOP denné recovery skóre</p>
+            </div>
+            <div style="position:relative;height:200px">
+                <canvas id="recChart"></canvas>
+            </div>
+        </div>
 
-    <p class="text-center text-xs text-on-surface-variant opacity-40 pb-4">
-        Importuj <code>physiological_cycles.csv</code> z WHOOP exportu
-    </p>
+    </div><!-- end charts-wrapper -->
 
 </div>
 
@@ -183,8 +193,11 @@ function buildOpts(yLabel) {
 }
 
 let hrvChart, rhrChart, recChart;
+let chartsInitialized = false;
 
 function initCharts() {
+    if (chartsInitialized) return;
+    chartsInitialized = true;
     hrvChart = new Chart(document.getElementById('hrvChart').getContext('2d'), {
         type: 'line',
         data: { labels: [], datasets: [
@@ -274,72 +287,88 @@ function updateStats(stats, days) {
 function loadData(days) {
     const url = (days && days > 0) ? `/api/biometric-history?days=${days}` : '/api/biometric-history';
 
-    // Show loading state
-    ['hrvChart','rhrChart','recChart'].forEach(id => {
-        document.getElementById(id).style.opacity = '0.4';
-    });
+    // Show loading state only if charts already visible
+    if (chartsInitialized) {
+        ['hrvChart','rhrChart','recChart'].forEach(id => {
+            const el = document.getElementById(id);
+            if (el) el.style.opacity = '0.4';
+        });
+    }
 
     fetch(url)
         .then(r => r.json())
         .then(d => {
-            ['hrvChart','rhrChart','recChart'].forEach(id => {
-                document.getElementById(id).style.opacity = '1';
-            });
+            if (chartsInitialized) {
+                ['hrvChart','rhrChart','recChart'].forEach(id => {
+                    const el = document.getElementById(id);
+                    if (el) el.style.opacity = '1';
+                });
+            }
 
             const hasData = d.hrv && d.hrv.length > 0;
             document.getElementById('no-data-msg').classList.toggle('hidden', hasData);
+            const wrapper = document.getElementById('charts-wrapper');
+            wrapper.classList.toggle('hidden', !hasData);
 
             if (!hasData) return;
 
-            const labels = d.hrv.map(p => p.x);
-            const thin = labels.length > 60;
-            const ptR = thin ? 0 : 2;
-
-            // HRV
-            hrvChart.data.labels = labels;
-            hrvChart.data.datasets[0].data = d.hrv.map(p => p.y);
-            hrvChart.data.datasets[0].pointRadius = ptR;
-            hrvChart.data.datasets[1].data = d.hrv_ma7.map(p => p.y);
-            hrvChart.data.datasets[2].data = avgLine(labels, d.stats.hrv_avg);
-            // Previous period overlay (aligned to same x labels)
-            hrvChart.data.datasets[3].data = (d.prev_hrv || []).map(p => p.y);
-            hrvChart.update();
-
-            // RHR
-            const rhrLabels = d.rhr.map(p => p.x);
-            rhrChart.data.labels = rhrLabels;
-            rhrChart.data.datasets[0].data = d.rhr.map(p => p.y);
-            rhrChart.data.datasets[0].pointRadius = ptR;
-            rhrChart.data.datasets[1].data = d.rhr_ma7.map(p => p.y);
-            rhrChart.data.datasets[2].data = avgLine(rhrLabels, d.stats.rhr_avg);
-            rhrChart.data.datasets[3].data = (d.prev_rhr || []).map(p => p.y);
-            rhrChart.update();
-
-            // Recovery
-            recChart.data.labels = d.recovery.map(p => p.x);
-            recChart.data.datasets[0].data = d.recovery.map(p => p.y);
-            recChart.data.datasets[0].pointRadius = ptR;
-            recChart.data.datasets[1].data = d.recovery_ma7.map(p => p.y);
-            recChart.update();
-
-            // Update date range label
-            if (d.date_range && d.date_range.start) {
-                document.getElementById('date-range-label').textContent =
-                    `${d.date_range.start} – ${d.date_range.end}  ·  ${d.stats.count} dní`;
+            // Init charts AFTER wrapper is visible (Chart.js needs non-zero canvas size)
+            if (!chartsInitialized) {
+                requestAnimationFrame(() => {
+                    initCharts();
+                    _updateCharts(d);
+                });
+                return;
             }
 
+            _updateCharts(d);
             updateStats(d.stats, days);
         })
         .catch(err => {
             ['hrvChart','rhrChart','recChart'].forEach(id => {
-                document.getElementById(id).style.opacity = '1';
+                const el = document.getElementById(id);
+                if (el) el.style.opacity = '1';
             });
             console.error('Chyba:', err);
         });
 }
 
+function _updateCharts(d) {
+    const labels = d.hrv.map(p => p.x);
+    const thin = labels.length > 60;
+    const ptR = thin ? 0 : 2;
+
+    hrvChart.data.labels = labels;
+    hrvChart.data.datasets[0].data = d.hrv.map(p => p.y);
+    hrvChart.data.datasets[0].pointRadius = ptR;
+    hrvChart.data.datasets[1].data = d.hrv_ma7.map(p => p.y);
+    hrvChart.data.datasets[2].data = avgLine(labels, d.stats.hrv_avg);
+    hrvChart.data.datasets[3].data = (d.prev_hrv || []).map(p => p.y);
+    hrvChart.update();
+
+    const rhrLabels = d.rhr.map(p => p.x);
+    rhrChart.data.labels = rhrLabels;
+    rhrChart.data.datasets[0].data = d.rhr.map(p => p.y);
+    rhrChart.data.datasets[0].pointRadius = ptR;
+    rhrChart.data.datasets[1].data = d.rhr_ma7.map(p => p.y);
+    rhrChart.data.datasets[2].data = avgLine(rhrLabels, d.stats.rhr_avg);
+    rhrChart.data.datasets[3].data = (d.prev_rhr || []).map(p => p.y);
+    rhrChart.update();
+
+    recChart.data.labels = d.recovery.map(p => p.x);
+    recChart.data.datasets[0].data = d.recovery.map(p => p.y);
+    recChart.data.datasets[0].pointRadius = ptR;
+    recChart.data.datasets[1].data = d.recovery_ma7.map(p => p.y);
+    recChart.update();
+
+    if (d.date_range && d.date_range.start) {
+        document.getElementById('date-range-label').textContent =
+            `${d.date_range.start} – ${d.date_range.end}  ·  ${d.stats.count} dní`;
+    }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
-    initCharts();
+    // initCharts() is called lazily in loadData() after wrapper is visible
     loadData(7);
 
     document.querySelectorAll('.period-btn').forEach(btn => {

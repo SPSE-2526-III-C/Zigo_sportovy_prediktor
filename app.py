@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'dev-key-for-sprint-predictor-123'
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-key-for-sprint-predictor-123')
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///database.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 # Session sa vymaže keď zatvoríš prehliadač (nie permanent cookie)
@@ -791,6 +791,25 @@ def osobaky():
 
 @app.route('/logout')
 def logout():
+    access_token = session.get('strava_access_token')
+    athlete_id = session.get('strava_athlete_id')
+
+    # Revoke token at Strava so next login forces credentials
+    if access_token:
+        try:
+            requests.post(
+                'https://www.strava.com/oauth/deauthorize',
+                data={'access_token': access_token},
+                timeout=5
+            )
+        except Exception:
+            pass
+
+    # Delete token from DB so it can't be silently refreshed
+    if athlete_id:
+        StravaToken.query.filter_by(athlete_id=str(athlete_id)).delete()
+        db.session.commit()
+
     session.clear()
     session.modified = True
     flash("Bol si odhlásený.", "success")

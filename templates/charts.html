@@ -9,6 +9,7 @@
     </div>
 
     <!-- Stats Row -->
+    {% if dates and dates|length > 0 %}
     <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6 reveal">
         {% if has_hrv %}
         <div class="bg-surface-container-high rounded-3xl p-5 flex items-center gap-4">
@@ -51,6 +52,7 @@
             </div>
         </div>
     </div>
+    {% endif %}
 
     <!-- Chart Card -->
     <div class="reveal reveal-d2 bg-surface-container-low rounded-3xl p-6 lg:p-8">

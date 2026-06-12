@@ -147,7 +147,7 @@
                     </div>
                     <div class="space-y-2">
                         {% for t in trainings %}
-                        <div class="bg-surface-container-low hover:bg-surface-bright transition-colors rounded-2xl p-4 border-l-2 border-primary/40 hover:border-primary/70 hover:translate-x-1 transition-all" data-date="{{ t.date.strftime('%Y-%m-%d') }}">
+                        <div class="bg-surface-container-low hover:bg-surface-bright rounded-2xl p-4 border-l-2 border-primary/40 hover:border-primary/70 hover:translate-x-1 transition-all" data-date="{{ t.date.strftime('%Y-%m-%d') }}">
                             <div class="flex items-center justify-between mb-2">
                                 <span class="text-xs text-on-surface-variant font-bold">{{ t.date.strftime('%d. %m. %Y') }}</span>
                                 <div class="flex items-center gap-3 text-right">
