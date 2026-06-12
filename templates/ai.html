@@ -308,10 +308,6 @@ loadReadiness();
 // ── Profil banner ───────────────────────────────────────────────────────
 async function loadProfile() {
     try {
-        const res = await fetch('/api/readiness');
-        // Profil načítame cez samostatný endpoint
-    } catch(e) {}
-    try {
         const res = await fetch('/profile/api');
         if (!res.ok) return;
         const p = await res.json();
