@@ -9,7 +9,7 @@
 
     <div class="grid grid-cols-1 md:grid-cols-12 gap-6">
         <!-- Form Card -->
-        <div class="md:col-span-5 bg-surface-container-low rounded-3xl p-6 lg:p-8">
+        <div class="md:col-span-5 reveal-left bg-surface-container-low rounded-3xl p-6 lg:p-8">
             <div class="flex items-center gap-3 mb-6">
                 <div class="w-10 h-10 rounded-2xl bg-primary-container flex items-center justify-center">
                     <span class="material-symbols-outlined text-primary text-xl">directions_run</span>
@@ -83,7 +83,7 @@
         <div class="md:col-span-7 flex flex-col gap-4">
 
             <!-- Calendar Card -->
-            <div class="bg-surface-container-high rounded-3xl p-6">
+            <div class="reveal bg-surface-container-high rounded-3xl p-6">
                 <div class="flex items-center gap-3 mb-4">
                     <div class="w-10 h-10 rounded-2xl bg-secondary-container flex items-center justify-center">
                         <span class="material-symbols-outlined text-secondary text-xl">calendar_month</span>
@@ -120,7 +120,7 @@
             </div>
 
             <!-- History Panel -->
-            <div class="bg-surface-container-high rounded-3xl p-6 lg:p-8 overflow-y-auto" style="max-height: 55vh;">
+            <div class="reveal reveal-d2 bg-surface-container-high rounded-3xl p-6 lg:p-8 overflow-y-auto" style="max-height: 55vh;">
                 <div class="flex items-center justify-between mb-6">
                     <div class="flex items-center gap-3">
                         <div class="w-10 h-10 rounded-2xl bg-secondary-container flex items-center justify-center">
@@ -147,7 +147,7 @@
                     </div>
                     <div class="space-y-2">
                         {% for t in trainings %}
-                        <div class="bg-surface-container-low hover:bg-surface-bright transition-colors rounded-2xl p-4 border-l-2 border-primary/40" data-date="{{ t.date.strftime('%Y-%m-%d') }}">
+                        <div class="reveal glow-card bg-surface-container-low hover:bg-surface-bright transition-colors rounded-2xl p-4 border-l-2 border-primary/40" data-date="{{ t.date.strftime('%Y-%m-%d') }}">
                             <div class="flex items-center justify-between mb-2">
                                 <span class="text-xs text-on-surface-variant font-bold">{{ t.date.strftime('%d. %m. %Y') }}</span>
                                 <div class="flex items-center gap-3 text-right">
