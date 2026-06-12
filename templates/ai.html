@@ -125,6 +125,25 @@
         </div>
     </div>
 
+    <!-- ─── Profil banner ───────────────────────────────────────────────── -->
+    <div id="profile-banner" class="hidden bg-surface-container-high border border-primary/20 rounded-2xl px-5 py-3 flex items-center justify-between gap-4">
+        <div class="flex items-center gap-3">
+            <span class="material-symbols-outlined text-primary text-xl">person</span>
+            <div>
+                <p class="font-bold text-on-surface text-sm" id="profile-name-display">Tvoj profil</p>
+                <p class="text-xs text-on-surface-variant" id="profile-detail-display"></p>
+            </div>
+        </div>
+        <a href="/profile" class="text-xs text-primary font-bold hover:underline flex-shrink-0">Upraviť</a>
+    </div>
+    <div id="no-profile-banner" class="bg-surface-container border border-white/10 rounded-2xl px-5 py-3 flex items-center justify-between gap-4">
+        <div class="flex items-center gap-3">
+            <span class="material-symbols-outlined text-on-surface-variant text-xl">person_add</span>
+            <p class="text-sm text-on-surface-variant">Nastav si profil atleta — AI bude vedieť tvoje meno, vek a cieľ.</p>
+        </div>
+        <a href="/profile" class="text-xs bg-primary text-white font-bold px-3 py-1.5 rounded-xl hover:opacity-90 transition flex-shrink-0">Nastaviť</a>
+    </div>
+
     <!-- ─── AI Coach Chat ──────────────────────────────────────────────── -->
     <div class="bg-surface-container-low rounded-3xl overflow-hidden flex flex-col" style="height:620px">
 
@@ -134,7 +153,7 @@
             </div>
             <div class="flex-1 min-w-0">
                 <h3 class="font-headline font-bold text-on-surface">Running AI Coach</h3>
-                <p class="text-xs text-on-surface-variant truncate">Špecialista na beh, šprint a regeneráciu • Llama 3.3 70B via Groq</p>
+                <p class="text-xs text-on-surface-variant truncate">Pozná tvoje dáta: rekordy, HRV, tréningy (60 dní) • DeepSeek R1 via Groq</p>
             </div>
             <div class="flex items-center gap-3">
                 <div class="flex items-center gap-1.5">
@@ -286,9 +305,31 @@ async function loadReadiness() {
 // Načítaj pri otvorení stránky
 loadReadiness();
 
-// ── Chatbot ─────────────────────────────────────────────────────────────
-let chatHistory = [];
+// ── Profil banner ───────────────────────────────────────────────────────
+async function loadProfile() {
+    try {
+        const res = await fetch('/api/readiness');
+        // Profil načítame cez samostatný endpoint
+    } catch(e) {}
+    try {
+        const res = await fetch('/profile/api');
+        if (!res.ok) return;
+        const p = await res.json();
+        if (p && (p.name || p.sport || p.goal)) {
+            document.getElementById('no-profile-banner').classList.add('hidden');
+            document.getElementById('profile-banner').classList.remove('hidden');
+            document.getElementById('profile-name-display').textContent = p.name || 'Tvoj profil';
+            const parts = [];
+            if (p.age) parts.push(p.age + ' r.');
+            if (p.sport) parts.push(p.sport);
+            if (p.goal) parts.push('Cieľ: ' + p.goal);
+            document.getElementById('profile-detail-display').textContent = parts.join(' • ');
+        }
+    } catch(e) {}
+}
+loadProfile();
 
+// ── Chatbot ─────────────────────────────────────────────────────────────
 function timeNow() {
     return new Date().toLocaleTimeString('sk-SK', { hour: '2-digit', minute: '2-digit' });
 }
@@ -369,6 +410,19 @@ function appendTyping() {
     container.scrollTop = container.scrollHeight;
 }
 
+// Načítaj históriu z DB pri otvorení stránky
+async function loadChatHistory() {
+    try {
+        const res = await fetch('/api/chat/history');
+        const msgs = await res.json();
+        if (!msgs.length) return;
+        // Skry suggestion buttons ak je história
+        document.querySelectorAll('.suggestion-btn').forEach(b => b.closest('.flex.flex-wrap')?.remove());
+        msgs.forEach(m => appendMessage(m.role, m.content));
+    } catch(e) {}
+}
+loadChatHistory();
+
 async function sendMessage() {
     const input    = document.getElementById('chat-input');
     const sendBtn  = document.getElementById('send-btn');
@@ -388,16 +442,13 @@ async function sendMessage() {
         const res  = await fetch('/api/chat', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ message, history: chatHistory })
+            body: JSON.stringify({ message })
         });
         const data = await res.json();
         document.getElementById('typing-indicator')?.remove();
 
         if (data.reply) {
             appendMessage('assistant', data.reply);
-            chatHistory.push({ role: 'user', content: message });
-            chatHistory.push({ role: 'assistant', content: data.reply });
-            if (chatHistory.length > 40) chatHistory = chatHistory.slice(-40);
         } else {
             appendMessage('assistant', `Chyba: ${data.error || 'Neznáma chyba'}`);
         }
@@ -411,7 +462,8 @@ async function sendMessage() {
     }
 }
 
-function clearChat() {
+async function clearChat() {
+    await fetch('/api/chat/clear', { method: 'POST' });
     const container = document.getElementById('chat-messages');
     container.innerHTML = `
         <div class="flex items-start gap-3">
@@ -425,7 +477,6 @@ function clearChat() {
                 <p class="text-[10px] text-on-surface-variant mt-1 ml-1">${timeNow()}</p>
             </div>
         </div>`;
-    chatHistory = [];
 }
 </script>
 {% endblock %}

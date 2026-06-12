@@ -60,6 +60,22 @@ class StravaToken(db.Model):
     created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
 
 
+class ChatMessage(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    role = db.Column(db.String(20), nullable=False)
+    content = db.Column(db.Text, nullable=False)
+    created_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+
+
+class UserProfile(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(100), nullable=True)
+    age = db.Column(db.Integer, nullable=True)
+    sport = db.Column(db.String(100), nullable=True)
+    goal = db.Column(db.String(200), nullable=True)
+    updated_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
+
+
 # -----------------------------
 # Init
 # -----------------------------
@@ -1138,9 +1154,11 @@ def biometrics():
 
 @app.route('/api/chat', methods=['POST'])
 def chat():
+    import re as _re, json as _json
+    from pathlib import Path
+
     data = request.json or {}
     message = data.get('message', '').strip()
-    history = data.get('history', [])
 
     if not message:
         return jsonify({'error': 'Prázdna správa'}), 400
@@ -1149,37 +1167,68 @@ def chat():
     if not api_key or api_key.startswith('gsk_...'):
         return jsonify({'error': 'GROQ_API_KEY nie je nastavený v .env súbore'}), 500
 
-    # Build rich athlete context — biometrics + recent training sessions
     athlete_context = ""
     try:
         today_d = date.today()
 
-        # Biometric data (30 days)
-        logs_30 = BiometricLog.query.filter(
-            BiometricLog.date >= today_d - timedelta(days=30)
+        # --- Profil atleta ---
+        profile = UserProfile.query.first()
+        if profile and any([profile.name, profile.age, profile.sport, profile.goal]):
+            athlete_context += "\n\n## PROFIL ATLETA\n"
+            if profile.name:  athlete_context += f"Meno: {profile.name}\n"
+            if profile.age:   athlete_context += f"Vek: {profile.age} rokov\n"
+            if profile.sport: athlete_context += f"Hlavná disciplína: {profile.sport}\n"
+            if profile.goal:  athlete_context += f"Cieľ: {profile.goal}\n"
+
+        # --- Osobné rekordy z cache ---
+        try:
+            token = session.get('strava_access_token', '')
+            cache_hint = token[-8:] if token else ''
+            cache_file = Path('cache') / f'prs_{cache_hint}.json'
+            if cache_file.exists():
+                prs = _json.loads(cache_file.read_text(encoding='utf-8'))
+                pr_lines = []
+                labels = {
+                    '400m': '400m', '800m': '800m', '1k': '1km', '1.5k': '1,5km',
+                    '1mile': '1 míľa', '2k': '2km', '5k': '5km', '10k': '10km',
+                    'half': 'polmaratón', 'marathon': 'maratón',
+                }
+                for key, label in labels.items():
+                    pr = prs.get(key)
+                    if pr and pr.get('time'):
+                        pace = f", tempo {pr['pace']}" if pr.get('pace') else ""
+                        pr_lines.append(f"  {label}: {pr['time']}{pace}")
+                if pr_lines:
+                    athlete_context += "\n## OSOBNÉ REKORDY (Strava)\n" + "\n".join(pr_lines) + "\n"
+        except Exception:
+            pass
+
+        # --- Biometrika (60 dní) ---
+        logs_60 = BiometricLog.query.filter(
+            BiometricLog.date >= today_d - timedelta(days=60)
         ).order_by(BiometricLog.date.desc()).all()
 
-        # Recent training logs (14 days)
+        # --- Tréningy (60 dní) ---
         train_logs = TrainingLog.query.filter(
-            TrainingLog.date >= today_d - timedelta(days=14)
-        ).order_by(TrainingLog.date.desc()).limit(10).all()
+            TrainingLog.date >= today_d - timedelta(days=60)
+        ).order_by(TrainingLog.date.desc()).limit(20).all()
 
         def avg(v): return round(sum(v)/len(v), 1) if v else None
 
-        if logs_30 or train_logs:
-            athlete_context = "\n\n## AKTUÁLNE DÁTA ATLETA\n"
+        if logs_60 or train_logs:
+            athlete_context += "\n## AKTUÁLNE DÁTA ATLETA\n"
 
-        if logs_30:
-            hrv_30 = [l.hrv for l in logs_30 if l.hrv]
-            rhr_30 = [l.rhr for l in logs_30 if l.rhr]
-            rec_30 = [l.recovery for l in logs_30 if l.recovery]
-            week1  = [l for l in logs_30 if l.date >= today_d - timedelta(days=7)]
-            week2  = [l for l in logs_30 if today_d - timedelta(days=14) <= l.date < today_d - timedelta(days=7)]
+        if logs_60:
+            hrv_all = [l.hrv for l in logs_60 if l.hrv]
+            rhr_all = [l.rhr for l in logs_60 if l.rhr]
+            rec_all = [l.recovery for l in logs_60 if l.recovery]
+            week1 = [l for l in logs_60 if l.date >= today_d - timedelta(days=7)]
+            week2 = [l for l in logs_60 if today_d - timedelta(days=14) <= l.date < today_d - timedelta(days=7)]
             hrv_w1 = [l.hrv for l in week1 if l.hrv]
             hrv_w2 = [l.hrv for l in week2 if l.hrv]
-            green  = sum(1 for r in rec_30 if r >= 67)
-            yellow = sum(1 for r in rec_30 if 34 <= r < 67)
-            red    = sum(1 for r in rec_30 if r < 34)
+            green  = sum(1 for r in rec_all if r >= 67)
+            yellow = sum(1 for r in rec_all if 34 <= r < 67)
+            red    = sum(1 for r in rec_all if r < 34)
 
             trend_str = ""
             if hrv_w1 and hrv_w2:
@@ -1187,18 +1236,18 @@ def chat():
                 trend_str = f"{'↑' if diff > 0 else '↓'} {abs(round(diff,1))}ms vs minulý týždeň"
 
             athlete_context += f"""
-### Biometrika (posledných 30 dní, {len(logs_30)} záznamov)
-HRV: priemer={avg(hrv_30)}ms | tento týždeň={avg(hrv_w1)}ms | {trend_str}
-RHR: priemer={avg(rhr_30)}bpm | min={min(rhr_30) if rhr_30 else '?'}bpm
-Recovery: zelená={green}d | žltá={yellow}d | červená={red}d | priemer={avg(rec_30)}%
+### Biometrika (posledných 60 dní, {len(logs_60)} záznamov)
+HRV: priemer={avg(hrv_all)}ms | tento týždeň={avg(hrv_w1)}ms | {trend_str}
+RHR: priemer={avg(rhr_all)}bpm | min={min(rhr_all) if rhr_all else '?'}bpm
+Recovery: zelená={green}d | žltá={yellow}d | červená={red}d | priemer={avg(rec_all)}%
 
 Posledných 7 dní:"""
-            for log in logs_30[:7]:
+            for log in logs_60[:7]:
                 status = "🟢" if (log.recovery or 0) >= 67 else "🟡" if (log.recovery or 0) >= 34 else "🔴"
                 athlete_context += f"\n  {log.date.strftime('%d.%m')}: HRV={log.hrv}ms, Recovery={log.recovery}% {status}, RHR={log.rhr or '?'}bpm"
 
         if train_logs:
-            athlete_context += "\n\n### Posledné tréningy (14 dní):"
+            athlete_context += "\n\n### Tréningy (posledných 60 dní):"
             for t in train_logs:
                 dur = ""
                 if t.duration_min:
@@ -1211,20 +1260,22 @@ Posledných 7 dní:"""
                 athlete_context += f"\n  {t.date.strftime('%d.%m')} {t.training_type}:{dist}{dur}{intervals}{notes}"
 
         if athlete_context:
-            athlete_context += "\n\n[Používaj tieto dáta pri každej odpovedi — sú kľúčové pre personalizované rady]"
+            athlete_context += "\n\n[Toto sú TVOJE skutočné dáta — vždy ich použi pri odpovedi]"
 
     except Exception:
         pass
 
-    # DeepSeek R1 — reasoning model, oveľa spoľahlivejší ako llama pre analytické otázky
-    # Fallback na llama ak DeepSeek nie je dostupný
+    # --- História z DB (posledných 20 správ) ---
+    db_history = ChatMessage.query.order_by(ChatMessage.created_at.desc()).limit(20).all()
+    db_history = [{'role': m.role, 'content': m.content} for m in reversed(db_history)]
+
     MODELS = [
         'deepseek-r1-distill-llama-70b',
         'llama-3.3-70b-versatile',
     ]
 
     messages = [{"role": "system", "content": CHAT_SYSTEM_PROMPT + athlete_context}]
-    messages += history[-16:]
+    messages += db_history
     messages.append({"role": "user", "content": message})
 
     last_error = None
@@ -1240,7 +1291,7 @@ Posledných 7 dní:"""
                     'model': model_name,
                     'messages': messages,
                     'max_tokens': 1500,
-                    'temperature': 0.3,   # nízka teplota = konzistentné, faktické odpovede
+                    'temperature': 0.3,
                 },
                 timeout=40
             )
@@ -1248,9 +1299,11 @@ Posledných 7 dní:"""
                 return jsonify({'error': 'Neplatný Groq API kľúč'}), 401
             if resp.status_code == 200:
                 reply = resp.json()['choices'][0]['message']['content']
-                # DeepSeek R1 wraps thinking in <think>...</think> — remove it
-                import re as _re
                 reply = _re.sub(r'<think>.*?</think>', '', reply, flags=_re.DOTALL).strip()
+                # Ulož do DB
+                db.session.add(ChatMessage(role='user', content=message))
+                db.session.add(ChatMessage(role='assistant', content=reply))
+                db.session.commit()
                 return jsonify({'reply': reply, 'model': model_name})
             last_error = f"HTTP {resp.status_code}"
         except Exception as e:
@@ -1258,6 +1311,46 @@ Posledných 7 dní:"""
             continue
 
     return jsonify({'error': f'Chyba: {last_error}'}), 500
+
+
+@app.route('/api/chat/history')
+def chat_history():
+    msgs = ChatMessage.query.order_by(ChatMessage.created_at.asc()).all()
+    return jsonify([{'role': m.role, 'content': m.content} for m in msgs])
+
+
+@app.route('/api/chat/clear', methods=['POST'])
+def chat_clear():
+    ChatMessage.query.delete()
+    db.session.commit()
+    return jsonify({'ok': True})
+
+
+@app.route('/profile/api')
+def profile_api():
+    p = UserProfile.query.first()
+    if not p:
+        return jsonify({})
+    return jsonify({'name': p.name, 'age': p.age, 'sport': p.sport, 'goal': p.goal})
+
+
+@app.route('/profile', methods=['GET', 'POST'])
+def profile():
+    p = UserProfile.query.first()
+    if request.method == 'POST':
+        if not p:
+            p = UserProfile()
+            db.session.add(p)
+        p.name = request.form.get('name', '').strip() or None
+        age_raw = request.form.get('age', '').strip()
+        p.age = int(age_raw) if age_raw.isdigit() else None
+        p.sport = request.form.get('sport', '').strip() or None
+        p.goal = request.form.get('goal', '').strip() or None
+        p.updated_at = datetime.utcnow()
+        db.session.commit()
+        flash('Profil uložený.', 'success')
+        return redirect(url_for('ai_portal'))
+    return render_template('profile.html', p=p)
 
 
 if __name__ == '__main__':
