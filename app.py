@@ -138,6 +138,19 @@ def pace_from_speed(speed):
     return f"{int(pace_sec // 60)}:{int(pace_sec % 60):02d} /km"
 
 
+def speed_to_kmh(speed):
+    if not speed:
+        return "-"
+    return f"{float(speed) * 3.6:.1f} km/h"
+
+
+def swim_pace_from_speed(speed):
+    if not speed:
+        return "-"
+    pace_sec = 100 / float(speed)
+    return f"{int(pace_sec // 60)}:{int(pace_sec % 60):02d} /100m"
+
+
 # -----------------------------
 # PR Helpers (Osobáky)
 # -----------------------------
@@ -576,12 +589,14 @@ def charts():
     dates = [log.date.strftime('%Y-%m-%d') for log in logs]
     hrv_data = [log.hrv for log in logs]
     recovery_data = [log.recovery for log in logs]
+    has_hrv = any(v is not None and v > 0 for v in hrv_data)
 
     return render_template(
         'charts.html',
         dates=dates,
         hrv_data=hrv_data,
-        recovery_data=recovery_data
+        recovery_data=recovery_data,
+        has_hrv=has_hrv
     )
 
 
@@ -688,12 +703,20 @@ def dashboard():
         my_trainings = []
         for act in activities:
             hr = getattr(act, 'average_heartrate', None)
+            act_type = str(act.type) if act.type else ''
+            act_type_lower = act_type.lower()
+            if 'ride' in act_type_lower or 'cycling' in act_type_lower:
+                pace = speed_to_kmh(act.average_speed)
+            elif 'swim' in act_type_lower:
+                pace = swim_pace_from_speed(act.average_speed)
+            else:
+                pace = pace_from_speed(act.average_speed)
             my_trainings.append({
                 'name': act.name,
-                'type': act.type,
+                'type': act_type,
                 'distance': round(float(act.distance) / 1000, 2),
                 'moving_time': f"{int(act.moving_time)//60}:{int(act.moving_time)%60:02d}",
-                'pace': pace_from_speed(act.average_speed),
+                'pace': pace,
                 'hr': int(hr) if hr else None,
                 'date': act.start_date.strftime("%d.%m.%Y %H:%M")
             })
